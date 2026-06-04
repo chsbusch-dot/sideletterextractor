@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+  background-color: theme('colors.paper');
+  color: theme('colors.ink.DEFAULT');
+}
+
+body {
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+}
+
+table.register {
+  @apply w-full text-sm border-separate border-spacing-0;
+}
+table.register thead th {
+  @apply sticky top-0 z-10 bg-ink text-paper text-left font-medium px-3 py-2 border-b border-ink-soft;
+}
+table.register tbody td {
+  @apply px-3 py-2 align-top border-b border-slate-200;
+}
+table.register tbody tr:hover {
+  @apply bg-slate-50;
+}
+
+.badge {
+  @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+}
+.badge-mfn {
+  @apply bg-accent-soft text-accent;
+}
+.badge-consent {
+  @apply bg-warn-soft text-warn;
+}
+.badge-review {
+  @apply bg-danger-soft text-danger;
+}
+.badge-type {
+  @apply bg-slate-200 text-ink-soft font-mono;
+}
+
+.btn {
+  @apply inline-flex items-center gap-2 rounded-md bg-ink text-paper px-3 py-2 text-sm font-medium hover:bg-ink-soft disabled:opacity-50 disabled:cursor-not-allowed;
+}
+.btn-ghost {
+  @apply inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium hover:bg-slate-100;
+}
+.btn-danger {
+  @apply inline-flex items-center gap-2 rounded-md bg-danger text-paper px-3 py-2 text-sm font-medium hover:opacity-90;
+}
+
+.card {
+  @apply bg-white rounded-lg border border-slate-200 shadow-sm;
+}
