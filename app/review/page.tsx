@@ -5,26 +5,17 @@ import Link from 'next/link';
 import { useRegister } from '@/lib/useRegister';
 import { ObligationTable } from '@/components/ObligationTable';
 import { store } from '@/lib/store';
+import { isReviewRow } from '@/lib/schema';
 
 export default function ReviewPage() {
   const rows = useRegister();
 
-  const reviewRows = useMemo(
-    () =>
-      rows.filter(
-        (r) =>
-          r.deadline === 'REVIEW' ||
-          r.owner === 'REVIEW' ||
-          r.frequency === 'REVIEW' ||
-          /REVIEW/.test(r.notes || '')
-      ),
+  const reviewRows = useMemo(() => rows.filter((r) => isReviewRow(r)), [rows]);
+  const lowConfidence = useMemo(
+    () => rows.filter((r) => typeof r.confidence === 'number' && r.confidence < 0.7),
     [rows]
   );
-
-  const consentRows = useMemo(
-    () => rows.filter((r) => r.consent_flag === 'Y'),
-    [rows]
-  );
+  const consentRows = useMemo(() => rows.filter((r) => r.consent_flag === 'Y'), [rows]);
 
   if (rows.length === 0) {
     return (
@@ -47,20 +38,25 @@ export default function ReviewPage() {
         <header>
           <h1 className="text-2xl font-semibold tracking-tight">Review queue</h1>
           <p className="text-ink-muted text-sm mt-1">
-            Rows where the extractor flagged a missing or ambiguous field. Resolve in source
-            (the side letter) and re-extract, or edit the row in place by removing and
-            re-adding.
+            Rows where the extractor flagged a missing or ambiguous field, OR self-reported
+            confidence below 70%. Resolve in source and re-extract, or remove and re-add the
+            row. Recall over precision: anything uncertain lands here, not in the silently
+            confident set.
           </p>
         </header>
 
         {reviewRows.length === 0 ? (
           <div className="card p-6 text-ink-muted">
-            Nothing flagged. Every row has a concrete deadline, owner, and frequency.
+            Nothing flagged. Every row has a concrete deadline, owner, frequency, and ≥70%
+            self-reported confidence.
           </div>
         ) : (
           <>
             <div className="text-xs text-ink-muted">
-              {reviewRows.length} of {rows.length} rows need human resolution.
+              {reviewRows.length} of {rows.length} rows need human resolution
+              {lowConfidence.length > 0 &&
+                ` · ${lowConfidence.length} flagged by confidence threshold`}
+              .
             </div>
             <ObligationTable rows={reviewRows} onRemove={(id) => store.remove(id)} />
           </>

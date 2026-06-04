@@ -7,6 +7,7 @@ import { useRegister } from '@/lib/useRegister';
 import { store } from '@/lib/store';
 import { OBLIGATION_TYPES, OBLIGATION_TYPE_LABELS, ObligationType } from '@/lib/taxonomy';
 import { downloadBlob, toCSV } from '@/lib/csv';
+import { isReviewRow } from '@/lib/schema';
 
 type FlagFilter = 'all' | 'mfn' | 'consent' | 'review';
 
@@ -28,16 +29,7 @@ export default function RegisterPage() {
       if (type && r.obligation_type !== type) return false;
       if (flag === 'mfn' && r.mfn_flag !== 'Y') return false;
       if (flag === 'consent' && r.consent_flag !== 'Y') return false;
-      if (
-        flag === 'review' &&
-        !(
-          r.deadline === 'REVIEW' ||
-          r.owner === 'REVIEW' ||
-          r.frequency === 'REVIEW' ||
-          /REVIEW/.test(r.notes || '')
-        )
-      )
-        return false;
+      if (flag === 'review' && !isReviewRow(r)) return false;
       if (needle) {
         const hay = [
           r.lp_name,

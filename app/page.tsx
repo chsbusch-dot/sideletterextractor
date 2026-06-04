@@ -2,10 +2,11 @@
 
 import { useCallback, useRef, useState } from 'react';
 import Link from 'next/link';
-import { extractPdfText } from '@/lib/pdf';
+import { readFileAsBase64 } from '@/lib/pdf';
 import { store } from '@/lib/store';
-import { Obligation, StoredObligation } from '@/lib/schema';
-import { ObligationTable } from '@/components/ObligationTable';
+import { Obligation, StoredObligation, isReviewRow } from '@/lib/schema';
+import { PdfViewer } from '@/components/PdfViewer';
+import { ObligationCard } from '@/components/ObligationCard';
 
 type ExtractResponse = {
   obligations: Obligation[];
@@ -16,72 +17,115 @@ type ExtractResponse = {
 const TABS = ['Upload PDF', 'Paste text'] as const;
 type Tab = (typeof TABS)[number];
 
+const MAX_PDF_BYTES = 16 * 1024 * 1024;
+
 export default function HomePage() {
   const [tab, setTab] = useState<Tab>('Upload PDF');
   const [filename, setFilename] = useState('');
   const [text, setText] = useState('');
+  const [pdfBase64, setPdfBase64] = useState<string | null>(null);
+  const [lpaBase64, setLpaBase64] = useState<string | null>(null);
+  const [lpaFilename, setLpaFilename] = useState('');
+
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<StoredObligation[] | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ added: number; updated: number } | null>(null);
+
   const fileInput = useRef<HTMLInputElement>(null);
+  const lpaInput = useRef<HTMLInputElement>(null);
 
   const reset = () => {
     setError(null);
     setPreview(null);
+    setActiveId(null);
     setSaved(null);
   };
 
-  const onPickFile = useCallback(async (file: File) => {
-    reset();
-    setFilename(file.name);
-    setLoading(true);
-    setStage('Extracting text from PDF…');
-    try {
-      const extracted = await extractPdfText(file);
-      setText(extracted);
-      setStage('Asking Claude to extract obligations…');
-      await runExtraction(extracted, file.name);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'PDF extraction failed.');
-    } finally {
-      setLoading(false);
-      setStage('');
+  const onPickFile = useCallback(
+    async (file: File) => {
+      reset();
+      if (file.size > MAX_PDF_BYTES) {
+        setError(
+          `PDF is ${Math.round(file.size / 1024 / 1024)} MB; cap is ${MAX_PDF_BYTES / 1024 / 1024} MB. Split it or paste relevant excerpts.`
+        );
+        return;
+      }
+      setFilename(file.name);
+      setLoading(true);
+      setStage('Reading PDF…');
+      try {
+        const b64 = await readFileAsBase64(file);
+        setPdfBase64(b64);
+        setStage('Asking Claude to extract obligations…');
+        await runExtraction({ pdf: b64, filename: file.name });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to read file.');
+      } finally {
+        setLoading(false);
+        setStage('');
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  const onPickLpa = useCallback(async (file: File) => {
+    if (file.size > MAX_PDF_BYTES) {
+      setError(`LPA is too large (${Math.round(file.size / 1024 / 1024)} MB).`);
+      return;
     }
+    const b64 = await readFileAsBase64(file);
+    setLpaBase64(b64);
+    setLpaFilename(file.name);
   }, []);
 
-  const runExtraction = useCallback(async (docText: string, name: string) => {
-    setLoading(true);
-    setStage('Asking Claude to extract obligations…');
-    setError(null);
-    setPreview(null);
-    setSaved(null);
-    try {
-      const res = await fetch('/api/extract', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: docText, filename: name }),
-      });
-      const json = (await res.json()) as ExtractResponse | { error: string };
-      if (!res.ok || 'error' in json) {
-        throw new Error('error' in json ? json.error : `HTTP ${res.status}`);
+  const runExtraction = useCallback(
+    async (
+      payload:
+        | { pdf: string; filename: string }
+        | { text: string; filename: string }
+    ) => {
+      setLoading(true);
+      setStage('Asking Claude to extract obligations…');
+      setError(null);
+      setPreview(null);
+      setSaved(null);
+      try {
+        const body: Record<string, unknown> = { ...payload };
+        if (lpaBase64) body.lpa_pdf = lpaBase64;
+        const res = await fetch('/api/extract', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const json = (await res.json()) as
+          | ExtractResponse
+          | { error: string; details?: unknown };
+        if (!res.ok || 'error' in json) {
+          const msg = 'error' in json ? json.error : `HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+        const now = new Date().toISOString();
+        const stored: StoredObligation[] = json.obligations.map((o, idx) => ({
+          ...o,
+          id: `preview_${idx}`,
+          source_filename: payload.filename,
+          extracted_at: now,
+        }));
+        setPreview(stored);
+        if (stored.length > 0) setActiveId(stored[0].id);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Extraction failed.');
+      } finally {
+        setLoading(false);
+        setStage('');
       }
-      const now = new Date().toISOString();
-      const stored: StoredObligation[] = json.obligations.map((o, idx) => ({
-        ...o,
-        id: `preview_${idx}`,
-        source_filename: name,
-        extracted_at: now,
-      }));
-      setPreview(stored);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Extraction failed.');
-    } finally {
-      setLoading(false);
-      setStage('');
-    }
-  }, []);
+    },
+    [lpaBase64]
+  );
 
   const onSave = useCallback(() => {
     if (!preview) return;
@@ -93,128 +137,188 @@ export default function HomePage() {
     setSaved(result);
   }, [preview, filename]);
 
+  const active = preview?.find((p) => p.id === activeId) ?? null;
+
   return (
-    <div className="space-y-8">
-      <section>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Upload a side letter, get a register.
-        </h1>
-        <p className="text-ink-muted mt-2 max-w-3xl">
-          Drop a PDF or paste text. The extractor returns a standardized obligation register
-          (controlled taxonomy, traceable to clause refs, REVIEW where ambiguous), then merges
-          into your master register on{' '}
-          <code className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded">
-            lp_name + clause_ref
-          </code>
-          .
-        </p>
-      </section>
+    <div className="space-y-6">
+      {!preview && (
+        <>
+          <section>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              Upload a side letter, get a register.
+            </h1>
+            <p className="text-ink-muted mt-2 max-w-3xl">
+              Drop a PDF and the extractor returns a standardized obligation register —
+              controlled taxonomy, source-page citations, self-reported confidence per row,
+              and structured carve-outs / conditions / thresholds. Click any row to jump to
+              the exact clause in the PDF.
+            </p>
+          </section>
 
-      <section className="card p-6">
-        <div className="flex gap-1 mb-4">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => {
-                setTab(t);
-                reset();
-              }}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium ${
-                tab === t
-                  ? 'bg-ink text-paper'
-                  : 'text-ink-muted hover:bg-slate-100 hover:text-ink'
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
+          <section className="card p-6">
+            <div className="flex gap-1 mb-4">
+              {TABS.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => {
+                    setTab(t);
+                    reset();
+                  }}
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium ${
+                    tab === t
+                      ? 'bg-ink text-paper'
+                      : 'text-ink-muted hover:bg-slate-100 hover:text-ink'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
 
-        {tab === 'Upload PDF' && (
-          <div
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              const f = e.dataTransfer.files?.[0];
-              if (f) onPickFile(f);
-            }}
-            className="rounded-md border-2 border-dashed border-slate-300 bg-slate-50 p-10 text-center"
-          >
-            <p className="text-ink-muted mb-3">Drag a PDF here, or</p>
-            <button
-              type="button"
-              className="btn"
-              disabled={loading}
-              onClick={() => fileInput.current?.click()}
-            >
-              Choose PDF
-            </button>
-            <input
-              ref={fileInput}
-              type="file"
-              accept="application/pdf"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) onPickFile(f);
-              }}
-            />
-            {filename && (
-              <p className="mt-3 text-xs text-ink-muted">
-                <span className="font-mono">{filename}</span>
-              </p>
+            {tab === 'Upload PDF' && (
+              <div
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const f = e.dataTransfer.files?.[0];
+                  if (f) onPickFile(f);
+                }}
+                className="rounded-md border-2 border-dashed border-slate-300 bg-slate-50 p-10 text-center"
+              >
+                <p className="text-ink-muted mb-3">Drag a side-letter PDF here, or</p>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={loading}
+                  onClick={() => fileInput.current?.click()}
+                >
+                  Choose PDF
+                </button>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept="application/pdf"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) onPickFile(f);
+                  }}
+                />
+                {filename && (
+                  <p className="mt-3 text-xs text-ink-muted">
+                    <span className="font-mono">{filename}</span>
+                  </p>
+                )}
+              </div>
             )}
-          </div>
-        )}
 
-        {tab === 'Paste text' && (
-          <div className="space-y-3">
-            <input
-              type="text"
-              value={filename}
-              onChange={(e) => setFilename(e.target.value)}
-              placeholder="Source label (e.g., meridian-iv-side-letter.md)"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-            />
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={14}
-              placeholder="Paste the side letter text here…"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-xs"
-            />
-            <button
-              type="button"
-              className="btn"
-              disabled={loading || !text.trim()}
-              onClick={() => runExtraction(text.trim(), filename || 'pasted-text')}
-            >
-              Extract obligations
-            </button>
-          </div>
-        )}
+            {tab === 'Paste text' && (
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  value={filename}
+                  onChange={(e) => setFilename(e.target.value)}
+                  placeholder="Source label (e.g., meridian-iv-side-letter.md)"
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                />
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  rows={14}
+                  placeholder="Paste the side letter text here…"
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-xs"
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={loading || !text.trim()}
+                  onClick={() => {
+                    setPdfBase64(null);
+                    runExtraction({ text: text.trim(), filename: filename || 'pasted-text' });
+                  }}
+                >
+                  Extract obligations
+                </button>
+              </div>
+            )}
 
-        {loading && (
-          <div className="mt-4 text-sm text-ink-muted flex items-center gap-2">
-            <span className="inline-block h-2 w-2 rounded-full bg-accent animate-pulse" />
-            {stage || 'Working…'}
-          </div>
-        )}
-        {error && (
-          <div className="mt-4 rounded-md bg-danger-soft border border-danger/20 px-3 py-2 text-sm text-danger">
-            {error}
-          </div>
-        )}
-      </section>
+            <details className="mt-4 text-sm">
+              <summary className="cursor-pointer text-ink-muted hover:text-ink select-none">
+                Optional: attach LPA for cross-reference{' '}
+                {lpaBase64 && (
+                  <span className="text-accent">· loaded {lpaFilename}</span>
+                )}
+              </summary>
+              <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 space-y-2">
+                <p className="text-xs text-ink-muted">
+                  If you attach the partnership agreement, the extractor will use it to
+                  interpret side-letter language that modifies LPA sections, and will populate{' '}
+                  <code className="font-mono text-xs bg-white px-1 rounded">
+                    lpa_section_ref
+                  </code>{' '}
+                  on each row where applicable.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={() => lpaInput.current?.click()}
+                  >
+                    {lpaBase64 ? 'Replace LPA PDF' : 'Choose LPA PDF'}
+                  </button>
+                  {lpaBase64 && (
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      onClick={() => {
+                        setLpaBase64(null);
+                        setLpaFilename('');
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
+                  <input
+                    ref={lpaInput}
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) onPickLpa(f);
+                    }}
+                  />
+                </div>
+              </div>
+            </details>
+
+            {loading && (
+              <div className="mt-4 text-sm text-ink-muted flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full bg-accent animate-pulse" />
+                {stage || 'Working…'}
+              </div>
+            )}
+            {error && (
+              <div className="mt-4 rounded-md bg-danger-soft border border-danger/20 px-3 py-2 text-sm text-danger">
+                {error}
+              </div>
+            )}
+          </section>
+        </>
+      )}
 
       {preview && (
         <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">
-              Extracted {preview.length}{' '}
-              {preview.length === 1 ? 'obligation' : 'obligations'}
-            </h2>
+          <header className="flex items-center justify-between">
+            <div>
+              <h1 className="text-xl font-semibold">
+                Extracted {preview.length}{' '}
+                {preview.length === 1 ? 'obligation' : 'obligations'} from{' '}
+                <span className="font-mono text-sm">{filename}</span>
+              </h1>
+              <PriorityFlagsInline rows={preview} />
+            </div>
             <div className="flex items-center gap-2">
               {saved ? (
                 <span className="text-sm text-accent">
@@ -228,57 +332,65 @@ export default function HomePage() {
                   Save to master register
                 </button>
               )}
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => {
+                  reset();
+                  setPdfBase64(null);
+                }}
+              >
+                New extraction
+              </button>
+            </div>
+          </header>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div>
+              {pdfBase64 ? (
+                <PdfViewer
+                  pdfBase64={pdfBase64}
+                  activePage={active?.source_page ?? null}
+                  activeExcerpt={active?.source_excerpt ?? ''}
+                />
+              ) : (
+                <div className="card p-6 text-sm text-ink-muted">
+                  No PDF available for the text-paste flow. Click rows to inspect details.
+                </div>
+              )}
+            </div>
+            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 180px)' }}>
+              {preview.map((r) => (
+                <ObligationCard
+                  key={r.id}
+                  row={r}
+                  active={r.id === activeId}
+                  onClick={() => setActiveId(r.id)}
+                />
+              ))}
             </div>
           </div>
-
-          <ObligationTable rows={preview} />
-
-          <PriorityFlags rows={preview} />
         </section>
       )}
     </div>
   );
 }
 
-function PriorityFlags({ rows }: { rows: StoredObligation[] }) {
+function PriorityFlagsInline({ rows }: { rows: StoredObligation[] }) {
   const mfn = rows.filter((r) => r.mfn_flag === 'Y').length;
   const consent = rows.filter((r) => r.consent_flag === 'Y').length;
-  const review = rows.filter(
-    (r) =>
-      r.deadline === 'REVIEW' ||
-      r.owner === 'REVIEW' ||
-      r.frequency === 'REVIEW' ||
-      /REVIEW/.test(r.notes || '')
-  ).length;
-
+  const review = rows.filter((r) => isReviewRow(r)).length;
   return (
-    <div className="grid grid-cols-3 gap-4">
-      <Stat label="MFN-eligible" value={mfn} tone="accent" />
-      <Stat label="Consent-gated" value={consent} tone="warn" />
-      <Stat label="Need review" value={review} tone="danger" />
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone: 'accent' | 'warn' | 'danger';
-}) {
-  const toneClass =
-    tone === 'accent'
-      ? 'text-accent'
-      : tone === 'warn'
-      ? 'text-warn'
-      : 'text-danger';
-  return (
-    <div className="card p-4">
-      <div className={`text-2xl font-semibold ${toneClass}`}>{value}</div>
-      <div className="text-xs text-ink-muted uppercase tracking-wide">{label}</div>
+    <div className="text-xs text-ink-muted mt-1 flex gap-3">
+      <span>
+        <span className="font-medium text-ink-soft">{mfn}</span> MFN-eligible
+      </span>
+      <span>
+        <span className="font-medium text-ink-soft">{consent}</span> consent-gated
+      </span>
+      <span>
+        <span className="font-medium text-ink-soft">{review}</span> need review
+      </span>
     </div>
   );
 }

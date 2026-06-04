@@ -4,7 +4,7 @@ type PdfjsModule = typeof import('pdfjs-dist');
 
 let cached: PdfjsModule | null = null;
 
-async function loadPdfjs(): Promise<PdfjsModule> {
+export async function loadPdfjs(): Promise<PdfjsModule> {
   if (cached) return cached;
   const mod = (await import('pdfjs-dist')) as PdfjsModule;
   mod.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${mod.version}/build/pdf.worker.min.mjs`;
@@ -12,20 +12,26 @@ async function loadPdfjs(): Promise<PdfjsModule> {
   return mod;
 }
 
-export async function extractPdfText(file: File): Promise<string> {
-  const pdfjs = await loadPdfjs();
-  const buf = await file.arrayBuffer();
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
-  const out: string[] = [];
-  for (let i = 1; i <= doc.numPages; i += 1) {
-    const page = await doc.getPage(i);
-    const content = await page.getTextContent();
-    const pageText = content.items
-      .map((it) => ('str' in it ? it.str : ''))
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    out.push(pageText);
-  }
-  return out.join('\n\n');
+export async function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+export function base64ToUint8(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+export function normalizeForMatch(s: string): string {
+  return s.replace(/[\s ]+/g, ' ').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').trim().toLowerCase();
 }
