@@ -44,6 +44,40 @@ cp .env.example .env
 npm run dev
 ```
 
+### Secrets via Bitwarden Secrets Manager (optional)
+
+If you keep app secrets in Bitwarden Secrets Manager, two scripts wire it up
+so Bitwarden is the source of truth in both directions.
+
+Prereqs: `bws`, `jq`. Install on macOS with:
+
+```bash
+brew install bitwarden/tap/bws jq
+```
+
+Export these in your shell rc (`~/.zshrc`):
+
+```bash
+export BWS_ACCESS_TOKEN=…       # Bitwarden Secrets Manager machine-account token
+export BWS_PROJECT_ID=…         # Project that holds the side-letter extractor secrets
+export VERCEL_TOKEN=…           # Vercel personal access token (Account Settings → Tokens)
+export VERCEL_PROJECT_ID=…      # Project Settings → General → Project ID
+export VERCEL_TEAM_ID=…         # optional, only if the project is team-scoped
+```
+
+In Bitwarden, create secrets with keys that match the env var names
+(`ANTHROPIC_API_KEY`, `SITE_PASSWORD`, `UPSTASH_REDIS_REST_URL`, etc.) — same names
+the code reads from `process.env`.
+
+```bash
+./scripts/env-pull.sh             # Bitwarden → .env.local (for `npm run dev`)
+./scripts/env-push-vercel.sh      # Bitwarden → Vercel (Production + Preview + Dev)
+```
+
+The push script is a true upsert: any existing Vercel env var with a matching
+name is deleted and replaced with the Bitwarden value. After pushing, redeploy
+on Vercel for the new values to take effect.
+
 Open http://localhost:3000. Try `examples/input/sample-side-letter.md` from the skill repo as a paste.
 
 ## Deploy to Vercel
