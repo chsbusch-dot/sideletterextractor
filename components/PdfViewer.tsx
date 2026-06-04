@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { base64ToUint8, loadPdfjs, normalizeForMatch } from '@/lib/pdf';
 
 type Highlight = {
@@ -10,13 +11,14 @@ type Highlight = {
   height: number;
 };
 
+type TextItemRect = {
+  text: string;
+  rect: Highlight;
+};
+
 type PdfPageInfo = {
-  pageNum: number;
   viewport: { width: number; height: number };
-  items: {
-    text: string;
-    rect: { left: number; top: number; width: number; height: number };
-  }[];
+  items: TextItemRect[];
 };
 
 type Props = {
@@ -28,69 +30,49 @@ type Props = {
 const SCALE = 1.4;
 
 export function PdfViewer({ pdfBase64, activePage, activeExcerpt }: Props) {
-  const [pages, setPages] = useState<PdfPageInfo[]>([]);
+  const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
+  const [numPages, setNumPages] = useState(0);
+  const [pagesInfo, setPagesInfo] = useState<Map<number, PdfPageInfo>>(new Map());
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loadingDoc, setLoadingDoc] = useState(true);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const canvasRefs = useRef<Map<number, HTMLCanvasElement>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    let loadingTask: ReturnType<typeof getDocumentSafe> | null = null;
+
+    function getDocumentSafe(data: Uint8Array) {
+      return (async () => {
+        const pdfjs = await loadPdfjs();
+        return pdfjs.getDocument({ data });
+      })();
+    }
+
+    setLoadingDoc(true);
     setError(null);
-    setPages([]);
+    setDoc(null);
+    setNumPages(0);
+    setPagesInfo(new Map());
 
     (async () => {
       try {
-        const pdfjs = await loadPdfjs();
         const data = base64ToUint8(pdfBase64);
-        const doc = await pdfjs.getDocument({ data }).promise;
-        const collected: PdfPageInfo[] = [];
-
-        for (let p = 1; p <= doc.numPages; p += 1) {
-          if (cancelled) return;
-          const page = await doc.getPage(p);
-          const viewport = page.getViewport({ scale: SCALE });
-          const canvas = canvasRefs.current.get(p);
-          if (canvas) {
-            canvas.width = viewport.width;
-            canvas.height = viewport.height;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-              await page.render({ canvasContext: ctx, viewport }).promise;
-            }
-          }
-          const tc = await page.getTextContent();
-          const items = tc.items
-            .map((it) => {
-              if (!('str' in it) || !('transform' in it)) return null;
-              const m = pdfjs.Util.transform(viewport.transform, it.transform);
-              const fontHeight = Math.abs(m[3]) || 10;
-              const width = (it.width ?? 0) * viewport.scale;
-              const left = m[4];
-              const top = m[5] - fontHeight;
-              return {
-                text: it.str,
-                rect: { left, top, width, height: fontHeight },
-              };
-            })
-            .filter((x): x is NonNullable<typeof x> => x !== null);
-
-          collected.push({
-            pageNum: p,
-            viewport: { width: viewport.width, height: viewport.height },
-            items,
-          });
-          if (!cancelled) {
-            setPages((prev) => [...prev, collected[collected.length - 1]]);
-          }
+        loadingTask = getDocumentSafe(data);
+        const task = await loadingTask;
+        const d = await task.promise;
+        if (cancelled) {
+          d.destroy();
+          return;
         }
-        if (!cancelled) setLoading(false);
+        setDoc(d);
+        setNumPages(d.numPages);
+        setLoadingDoc(false);
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to render PDF.');
-          setLoading(false);
+          setError(err instanceof Error ? err.message : 'Failed to load PDF.');
+          setLoadingDoc(false);
         }
       }
     })();
@@ -100,16 +82,24 @@ export function PdfViewer({ pdfBase64, activePage, activeExcerpt }: Props) {
     };
   }, [pdfBase64]);
 
+  const onPageInfo = useCallback((pageNum: number, info: PdfPageInfo) => {
+    setPagesInfo((prev) => {
+      const next = new Map(prev);
+      next.set(pageNum, info);
+      return next;
+    });
+  }, []);
+
   const highlightsByPage = useMemo(() => {
     const map = new Map<number, Highlight[]>();
     if (!activeExcerpt || !activeExcerpt.trim()) return map;
     const needle = normalizeForMatch(activeExcerpt);
     if (needle.length < 6) return map;
 
-    const matchPage = (p: PdfPageInfo): Highlight[] => {
+    const matchPage = (info: PdfPageInfo): Highlight[] => {
       let concatenated = '';
-      const offsets: { start: number; end: number; item: PdfPageInfo['items'][number] }[] = [];
-      for (const item of p.items) {
+      const offsets: { start: number; end: number; item: TextItemRect }[] = [];
+      for (const item of info.items) {
         const start = concatenated.length;
         concatenated += `${item.text} `;
         offsets.push({ start, end: concatenated.length, item });
@@ -118,8 +108,6 @@ export function PdfViewer({ pdfBase64, activePage, activeExcerpt }: Props) {
       const idx = norm.indexOf(needle);
       if (idx < 0) return [];
 
-      // Map normalized index back to raw concatenated index (approximate — both lowercased + whitespace-collapsed).
-      // We walk the raw string and skip whitespace to find the corresponding position.
       let rawStart = 0;
       let normSeen = 0;
       let prevSpace = true;
@@ -156,23 +144,21 @@ export function PdfViewer({ pdfBase64, activePage, activeExcerpt }: Props) {
         .map((o) => o.item.rect);
     };
 
-    for (const p of pages) {
-      if (activePage && p.pageNum !== activePage) continue;
-      const hits = matchPage(p);
-      if (hits.length > 0) map.set(p.pageNum, hits);
+    if (activePage && pagesInfo.has(activePage)) {
+      const hits = matchPage(pagesInfo.get(activePage)!);
+      if (hits.length > 0) map.set(activePage, hits);
     }
-    if (map.size === 0 && !activePage) {
-      // last-resort: scan all pages even without page hint
-      for (const p of pages) {
-        const hits = matchPage(p);
+    if (map.size === 0) {
+      for (const [p, info] of pagesInfo) {
+        const hits = matchPage(info);
         if (hits.length > 0) {
-          map.set(p.pageNum, hits);
+          map.set(p, hits);
           break;
         }
       }
     }
     return map;
-  }, [pages, activePage, activeExcerpt]);
+  }, [pagesInfo, activePage, activeExcerpt]);
 
   useEffect(() => {
     if (activePage === null) return;
@@ -183,12 +169,10 @@ export function PdfViewer({ pdfBase64, activePage, activeExcerpt }: Props) {
       const offset = elRect.top - containerRect.top + containerRef.current.scrollTop - 24;
       containerRef.current.scrollTo({ top: offset, behavior: 'smooth' });
     }
-  }, [activePage, pages.length]);
+  }, [activePage, pagesInfo.size]);
 
   if (error) {
-    return (
-      <div className="card p-6 text-danger text-sm">PDF render error: {error}</div>
-    );
+    return <div className="card p-6 text-danger text-sm">PDF render error: {error}</div>;
   }
 
   return (
@@ -197,57 +181,126 @@ export function PdfViewer({ pdfBase64, activePage, activeExcerpt }: Props) {
       className="card overflow-y-auto bg-slate-100"
       style={{ maxHeight: 'calc(100vh - 180px)' }}
     >
-      {loading && pages.length === 0 && (
+      {loadingDoc && (
         <div className="p-6 text-sm text-ink-muted">Loading PDF…</div>
       )}
       <div className="flex flex-col items-center gap-4 p-4">
-        {Array.from({ length: Math.max(pages.length, 0) }, (_, i) => i + 1).map(
-          (pageNum) => {
-            const page = pages.find((pp) => pp.pageNum === pageNum);
-            const hits = highlightsByPage.get(pageNum) ?? [];
-            return (
-              <div
-                key={pageNum}
-                ref={(el) => {
-                  if (el) pageRefs.current.set(pageNum, el);
-                }}
-                className="relative bg-white shadow-sm"
-                style={
-                  page
-                    ? { width: page.viewport.width, height: page.viewport.height }
-                    : undefined
-                }
-              >
-                <canvas
-                  ref={(el) => {
-                    if (el) canvasRefs.current.set(pageNum, el);
-                  }}
-                  className="block"
-                />
-                {hits.map((h, idx) => (
-                  <div
-                    key={idx}
-                    aria-hidden
-                    className="absolute pointer-events-none"
-                    style={{
-                      left: h.left,
-                      top: h.top,
-                      width: h.width,
-                      height: h.height,
-                      backgroundColor: 'rgba(250, 204, 21, 0.42)',
-                      mixBlendMode: 'multiply',
-                      border: '1px solid rgba(202, 138, 4, 0.7)',
-                      borderRadius: 2,
-                    }}
-                  />
-                ))}
-                <div className="absolute right-2 top-2 text-[10px] font-mono text-ink-muted bg-white/80 px-1.5 py-0.5 rounded">
-                  p. {pageNum}
-                </div>
-              </div>
-            );
-          }
-        )}
+        {doc &&
+          Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
+            <PdfPage
+              key={pageNum}
+              doc={doc}
+              pageNum={pageNum}
+              scale={SCALE}
+              onInfo={onPageInfo}
+              highlights={highlightsByPage.get(pageNum) ?? []}
+              registerRef={(el) => {
+                if (el) pageRefs.current.set(pageNum, el);
+                else pageRefs.current.delete(pageNum);
+              }}
+            />
+          ))}
+      </div>
+    </div>
+  );
+}
+
+type PdfPageProps = {
+  doc: PDFDocumentProxy;
+  pageNum: number;
+  scale: number;
+  onInfo: (pageNum: number, info: PdfPageInfo) => void;
+  highlights: Highlight[];
+  registerRef: (el: HTMLDivElement | null) => void;
+};
+
+function PdfPage({ doc, pageNum, scale, onInfo, highlights, registerRef }: PdfPageProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const pdfjs = await loadPdfjs();
+        const page = await doc.getPage(pageNum);
+        const viewport = page.getViewport({ scale });
+        if (cancelled) return;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        if (cancelled) return;
+        setSize({ width: viewport.width, height: viewport.height });
+
+        const tc = await page.getTextContent();
+        const items: TextItemRect[] = tc.items
+          .map((it) => {
+            if (!('str' in it) || !('transform' in it)) return null;
+            const m = pdfjs.Util.transform(viewport.transform, it.transform);
+            const fontHeight = Math.abs(m[3]) || 10;
+            const width = (it.width ?? 0) * scale;
+            const left = m[4];
+            const top = m[5] - fontHeight;
+            return {
+              text: it.str,
+              rect: { left, top, width, height: fontHeight },
+            };
+          })
+          .filter((x): x is TextItemRect => x !== null);
+
+        if (!cancelled) {
+          onInfo(pageNum, {
+            viewport: { width: viewport.width, height: viewport.height },
+            items,
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setPageError(err instanceof Error ? err.message : 'Page render failed.');
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [doc, pageNum, scale, onInfo]);
+
+  return (
+    <div
+      ref={registerRef}
+      className="relative bg-white shadow-sm"
+      style={size ? { width: size.width, height: size.height } : { minHeight: 60, width: '100%' }}
+    >
+      <canvas ref={canvasRef} className="block" />
+      {highlights.map((h, idx) => (
+        <div
+          key={idx}
+          aria-hidden
+          className="absolute pointer-events-none"
+          style={{
+            left: h.left,
+            top: h.top,
+            width: h.width,
+            height: h.height,
+            backgroundColor: 'rgba(250, 204, 21, 0.42)',
+            mixBlendMode: 'multiply',
+            border: '1px solid rgba(202, 138, 4, 0.7)',
+            borderRadius: 2,
+          }}
+        />
+      ))}
+      {pageError ? (
+        <div className="absolute inset-2 text-xs text-danger bg-white/90 p-2 rounded">
+          {pageError}
+        </div>
+      ) : null}
+      <div className="absolute right-2 top-2 text-[10px] font-mono text-ink-muted bg-white/80 px-1.5 py-0.5 rounded">
+        p. {pageNum}
       </div>
     </div>
   );
