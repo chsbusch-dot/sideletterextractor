@@ -346,20 +346,10 @@ export default function HomePage() {
           </header>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div>
-              {pdfBase64 ? (
-                <PdfViewer
-                  pdfBase64={pdfBase64}
-                  activePage={active?.source_page ?? null}
-                  activeExcerpt={active?.source_excerpt ?? ''}
-                />
-              ) : (
-                <div className="card p-6 text-sm text-ink-muted">
-                  No PDF available for the text-paste flow. Click rows to inspect details.
-                </div>
-              )}
-            </div>
-            <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 180px)' }}>
+            <div
+              className="space-y-2 overflow-y-auto pr-1"
+              style={{ maxHeight: 'calc(100vh - 180px)' }}
+            >
               {preview.map((r) => (
                 <ObligationCard
                   key={r.id}
@@ -368,6 +358,26 @@ export default function HomePage() {
                   onClick={() => setActiveId(r.id)}
                 />
               ))}
+            </div>
+            <div className="lg:sticky lg:top-4 self-start">
+              {pdfBase64 ? (
+                <>
+                  <div className="text-xs text-ink-muted mb-1 px-1">
+                    Source verification
+                    {active?.source_page ? ` · p. ${active.source_page}` : ''}
+                    {active?.clause_ref ? ` · ${active.clause_ref}` : ''}
+                  </div>
+                  <PdfViewer
+                    pdfBase64={pdfBase64}
+                    activePage={active?.source_page ?? null}
+                    activeExcerpt={active?.source_excerpt ?? ''}
+                  />
+                </>
+              ) : (
+                <div className="card p-6 text-sm text-ink-muted">
+                  No PDF available for the text-paste flow. Click rows to inspect details.
+                </div>
+              )}
             </div>
           </div>
         </section>

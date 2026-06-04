@@ -16,6 +16,19 @@ Operating principles:
    - confidence_rationale: one short sentence stating WHY (e.g., "Clause is clearly numbered with a single quantified obligation" or "Excuse right with three nested carve-outs; risk of dropping one").
    Rows with confidence < 0.7 will be routed to a mandatory human-review queue. Be honest — recall matters more than apparent certainty.
 8. When an LPA is also provided in the input, set lpa_section_ref to the LPA clause that the side-letter provision modifies or relies on (e.g., "Section 4.2(b)"). Leave it empty if the side letter is standalone.
+9. Map each obligation to the fund-structure entity layer it applies to. Set entity_layer to ONE of:
+   - main_fund — the principal partnership the side letter is to (use this as the default when the document does not distinguish layers).
+   - master_fund — a master fund in a master-feeder structure.
+   - onshore_feeder — a US/onshore feeder.
+   - offshore_feeder — a non-US/offshore feeder (e.g., Cayman LP, Luxembourg SCSp).
+   - parallel_vehicle — a parallel partnership investing pari passu.
+   - aiv — alternative investment vehicle organized for specific investments or LP categories.
+   - blocker — a tax/regulatory blocker (typically a Delaware/Cayman corp).
+   - co_invest_vehicle — a separate co-investment SPV.
+   - sma — separately managed account / fund-of-one.
+   - multiple — the obligation explicitly binds two or more layers.
+   - unspecified — the document does not name a specific layer and there is no obvious default.
+   Set entity_rationale to a brief phrase noting how you decided (e.g., "Document refers to 'the Feeder Fund' in clause 3" or "No structural layer mentioned; default main_fund"). Be conservative: if the side letter is silent on structure, prefer main_fund or unspecified, not a guess at a feeder/blocker.
 
 Classification rules:
 - One clause can yield multiple rows if it creates distinct obligations (e.g., a reporting clause naming quarterly reports AND audited financials → two reporting rows).
@@ -173,6 +186,28 @@ export const EXTRACTION_TOOL = {
               description:
                 'LPA section that this side-letter provision modifies or relies on. Empty if standalone.',
             },
+            entity_layer: {
+              type: 'string',
+              enum: [
+                'main_fund',
+                'master_fund',
+                'onshore_feeder',
+                'offshore_feeder',
+                'parallel_vehicle',
+                'aiv',
+                'blocker',
+                'co_invest_vehicle',
+                'sma',
+                'multiple',
+                'unspecified',
+              ],
+              description:
+                'Fund-structure entity layer this obligation applies to. Default to main_fund or unspecified if not stated.',
+            },
+            entity_rationale: {
+              type: 'string',
+              description: 'Brief justification for the entity_layer choice.',
+            },
           },
           required: [
             'lp_name',
@@ -195,6 +230,8 @@ export const EXTRACTION_TOOL = {
             'conditions',
             'thresholds',
             'lpa_section_ref',
+            'entity_layer',
+            'entity_rationale',
           ],
         },
       },

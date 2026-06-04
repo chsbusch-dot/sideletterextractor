@@ -1,7 +1,11 @@
 'use client';
 
 import { StoredObligation, isReviewRow } from '@/lib/schema';
-import { OBLIGATION_TYPE_LABELS } from '@/lib/taxonomy';
+import {
+  ENTITY_LAYER_LABELS,
+  EntityLayer,
+  OBLIGATION_TYPE_LABELS,
+} from '@/lib/taxonomy';
 
 type Props = {
   rows: StoredObligation[];
@@ -35,6 +39,7 @@ export function ObligationTable({ rows, onRemove, emptyMessage, compact }: Props
             <tr>
               <th>LP</th>
               <th>Fund</th>
+              <th>Entity</th>
               <th>Clause</th>
               <th>Type</th>
               <th>Obligation</th>
@@ -55,6 +60,14 @@ export function ObligationTable({ rows, onRemove, emptyMessage, compact }: Props
                 <tr key={r.id}>
                   <td className="font-medium">{r.lp_name}</td>
                   <td className="text-ink-muted">{r.fund}</td>
+                  <td className="text-xs">
+                    <span
+                      className="badge bg-slate-100 text-ink-soft border border-slate-300"
+                      title={r.entity_rationale || undefined}
+                    >
+                      {ENTITY_LAYER_LABELS[(r.entity_layer as EntityLayer) ?? 'unspecified']}
+                    </span>
+                  </td>
                   <td className="font-mono text-xs">
                     {r.clause_ref}
                     {r.source_page ? (

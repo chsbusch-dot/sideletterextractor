@@ -5,7 +5,14 @@ import Link from 'next/link';
 import { ObligationTable } from '@/components/ObligationTable';
 import { useRegister } from '@/lib/useRegister';
 import { store } from '@/lib/store';
-import { OBLIGATION_TYPES, OBLIGATION_TYPE_LABELS, ObligationType } from '@/lib/taxonomy';
+import {
+  ENTITY_LAYERS,
+  ENTITY_LAYER_LABELS,
+  EntityLayer,
+  OBLIGATION_TYPES,
+  OBLIGATION_TYPE_LABELS,
+  ObligationType,
+} from '@/lib/taxonomy';
 import { downloadBlob, toCSV } from '@/lib/csv';
 import { isReviewRow } from '@/lib/schema';
 
@@ -15,6 +22,7 @@ export default function RegisterPage() {
   const rows = useRegister();
   const [lp, setLp] = useState<string>('');
   const [type, setType] = useState<ObligationType | ''>('');
+  const [entity, setEntity] = useState<EntityLayer | ''>('');
   const [flag, setFlag] = useState<FlagFilter>('all');
   const [q, setQ] = useState('');
 
@@ -27,6 +35,7 @@ export default function RegisterPage() {
     return rows.filter((r) => {
       if (lp && r.lp_name !== lp) return false;
       if (type && r.obligation_type !== type) return false;
+      if (entity && (r.entity_layer ?? 'unspecified') !== entity) return false;
       if (flag === 'mfn' && r.mfn_flag !== 'Y') return false;
       if (flag === 'consent' && r.consent_flag !== 'Y') return false;
       if (flag === 'review' && !isReviewRow(r)) return false;
@@ -45,7 +54,13 @@ export default function RegisterPage() {
       }
       return true;
     });
-  }, [rows, lp, type, flag, q]);
+  }, [rows, lp, type, entity, flag, q]);
+
+  const entitiesPresent = useMemo(() => {
+    const set = new Set<EntityLayer>();
+    for (const r of rows) set.add((r.entity_layer as EntityLayer) ?? 'unspecified');
+    return ENTITY_LAYERS.filter((e) => set.has(e));
+  }, [rows]);
 
   if (rows.length === 0) {
     return (
@@ -95,7 +110,7 @@ export default function RegisterPage() {
         </div>
       </header>
 
-      <div className="card p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div className="card p-4 grid grid-cols-1 md:grid-cols-5 gap-3">
         <select
           value={lp}
           onChange={(e) => setLp(e.target.value)}
@@ -117,6 +132,18 @@ export default function RegisterPage() {
           {OBLIGATION_TYPES.map((t) => (
             <option key={t} value={t}>
               {OBLIGATION_TYPE_LABELS[t]}
+            </option>
+          ))}
+        </select>
+        <select
+          value={entity}
+          onChange={(e) => setEntity(e.target.value as EntityLayer | '')}
+          className="rounded-md border border-slate-300 px-2 py-2 text-sm"
+        >
+          <option value="">All entities ({entitiesPresent.length})</option>
+          {entitiesPresent.map((e) => (
+            <option key={e} value={e}>
+              {ENTITY_LAYER_LABELS[e]}
             </option>
           ))}
         </select>

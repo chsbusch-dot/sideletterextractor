@@ -1,7 +1,11 @@
 'use client';
 
 import { Obligation, StoredObligation, isReviewRow } from '@/lib/schema';
-import { OBLIGATION_TYPE_LABELS } from '@/lib/taxonomy';
+import {
+  ENTITY_LAYER_LABELS,
+  EntityLayer,
+  OBLIGATION_TYPE_LABELS,
+} from '@/lib/taxonomy';
 
 type Props = {
   row: Obligation | StoredObligation;
@@ -9,6 +13,18 @@ type Props = {
   onClick?: () => void;
   onRemove?: () => void;
 };
+
+function EntityPill({ layer, rationale }: { layer: EntityLayer; rationale: string }) {
+  if (!layer || layer === 'unspecified') return null;
+  return (
+    <span
+      className="badge bg-slate-100 text-ink-soft border border-slate-300"
+      title={rationale || undefined}
+    >
+      {ENTITY_LAYER_LABELS[layer]}
+    </span>
+  );
+}
 
 function ConfidencePill({ confidence }: { confidence: number | null }) {
   if (typeof confidence !== 'number') return null;
@@ -49,6 +65,10 @@ export function ObligationCard({ row, active, onClick, onRemove }: Props) {
             {row.mfn_flag === 'Y' && <span className="badge badge-mfn">MFN</span>}
             {row.consent_flag === 'Y' && <span className="badge badge-consent">Consent</span>}
             {review && <span className="badge badge-review">Review</span>}
+            <EntityPill
+              layer={(row.entity_layer as EntityLayer) ?? 'unspecified'}
+              rationale={row.entity_rationale ?? ''}
+            />
             <ConfidencePill confidence={row.confidence ?? null} />
           </div>
           <div className="font-medium text-sm leading-snug">{row.obligation_summary}</div>

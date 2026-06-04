@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FREQUENCIES, OBLIGATION_TYPES } from './taxonomy';
+import { ENTITY_LAYERS, FREQUENCIES, OBLIGATION_TYPES } from './taxonomy';
 
 const lenientType = z
   .string()
@@ -29,6 +29,18 @@ const yn = z
   .string()
   .transform((v) => v.trim().toUpperCase())
   .pipe(z.enum(['Y', 'N']).catch('N'));
+
+const lenientEntityLayer = z
+  .union([z.string(), z.null(), z.undefined()])
+  .transform((v) => (v ?? '').toString().trim())
+  .pipe(
+    z
+      .string()
+      .refine((v): v is (typeof ENTITY_LAYERS)[number] =>
+        (ENTITY_LAYERS as readonly string[]).includes(v)
+      )
+      .catch('unspecified' as (typeof ENTITY_LAYERS)[number])
+  );
 
 const optionalString = z
   .union([z.string(), z.null(), z.undefined()])
@@ -85,6 +97,8 @@ export const ObligationSchema = z
     conditions: stringArray.default([]),
     thresholds: thresholdArray.default([]),
     lpa_section_ref: optionalString.default(''),
+    entity_layer: lenientEntityLayer.default('unspecified'),
+    entity_rationale: optionalString.default(''),
   })
   .passthrough();
 
