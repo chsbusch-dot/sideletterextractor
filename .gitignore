@@ -26,6 +26,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# generated test artifacts
+test-side-letter.pdf
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
