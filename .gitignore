@@ -28,6 +28,7 @@ yarn-error.log*
 
 # generated test artifacts
 test-side-letter.pdf
+client-readme.pdf
 
 # typescript
 *.tsbuildinfo
