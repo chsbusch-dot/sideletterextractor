@@ -18,7 +18,7 @@ Built as a single-user portfolio demo. State lives in the browser; the only back
 
 ## How extraction works
 
-The API route `/api/extract` calls `claude-opus-4-7` (configurable) with:
+The API route `/api/extract` calls `claude-opus-4-8` (configurable) with:
 
 - A system prompt that ports the rules from `SKILL.md` (controlled taxonomy, traceability, REVIEW-don't-guess).
 - A single tool, `emit_obligation_register`, whose JSON schema mirrors the register columns. `tool_choice` forces the model to call it, so you get validated structured output back rather than free-form markdown.
@@ -52,7 +52,7 @@ Open http://localhost:3000. Try `examples/input/sample-side-letter.md` from the 
 2. Import it on Vercel.
 3. In **Project Settings → Environment Variables** set:
    - `ANTHROPIC_API_KEY` — required.
-   - `ANTHROPIC_MODEL` — optional, defaults to `claude-opus-4-7`. Use `claude-sonnet-4-6` for cheaper/faster runs.
+   - `ANTHROPIC_MODEL` — optional, defaults to `claude-opus-4-8`. Use `claude-sonnet-4-6` for cheaper/faster runs.
    - `SITE_PASSWORD` — optional. If set, the whole site is gated behind HTTP basic auth (user `extract`, password = this value). Strongly recommended on a public URL so visitors can't drain your API credits.
 4. Deploy. The Anthropic SDK call runs in the Node.js runtime; `maxDuration` is set to 120s for slower documents.
 

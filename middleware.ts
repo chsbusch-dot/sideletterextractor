@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 const REALM = 'side-letter-extractor';
-const USER = 'extract';
+const USER = 'catalant';
 
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],

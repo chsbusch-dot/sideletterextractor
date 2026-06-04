@@ -6,7 +6,7 @@ import { EXTRACTION_TOOL, SYSTEM_PROMPT, USER_PROMPT_TEMPLATE } from '@/lib/prom
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
-const DEFAULT_MODEL = 'claude-opus-4-7';
+const DEFAULT_MODEL = 'claude-opus-4-8';
 
 export async function POST(req: Request) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
