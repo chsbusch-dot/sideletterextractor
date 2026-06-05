@@ -12,8 +12,17 @@ export const runtime = 'nodejs';
 export const maxDuration = 180;
 
 const DEFAULT_MODEL = 'claude-opus-4-8';
+const FALLBACK_MODEL = 'claude-sonnet-4-6';
 const MAX_TEXT_LEN = 250_000;
 const MAX_PDF_BASE64_BYTES = 22 * 1024 * 1024;
+
+function isOverload(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { status?: number; message?: string };
+  if (e.status === 529) return true;
+  if (typeof e.message === 'string' && /overloaded/i.test(e.message)) return true;
+  return false;
+}
 
 type ExtractBody = {
   text?: string;
@@ -83,8 +92,8 @@ export async function POST(req: Request) {
   const hasLpaText = typeof body.lpa_text === 'string' && body.lpa_text.trim().length > 0;
   const lpaProvided = hasLpaPdf || hasLpaText;
 
-  const client = new Anthropic({ apiKey });
-  const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
+  const client = new Anthropic({ apiKey, maxRetries: 4 });
+  const primaryModel = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
 
   type ContentBlock =
     | { type: 'text'; text: string }
@@ -111,19 +120,49 @@ export async function POST(req: Request) {
     });
   }
 
-  let response;
-  try {
-    response = await client.messages.create({
-      model,
+  const callModel = (m: string) =>
+    client.messages.create({
+      model: m,
       max_tokens: 16_384,
       system: SYSTEM_PROMPT,
       tools: [EXTRACTION_TOOL],
       tool_choice: { type: 'tool', name: EXTRACTION_TOOL.name },
       messages: [{ role: 'user', content: userContent }],
     });
+
+  let response;
+  let modelUsed = primaryModel;
+  let fellBack = false;
+  try {
+    response = await callModel(primaryModel);
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown Anthropic error.';
-    return NextResponse.json({ error: `Extraction failed: ${message}` }, { status: 502 });
+    if (isOverload(err) && primaryModel !== FALLBACK_MODEL) {
+      try {
+        response = await callModel(FALLBACK_MODEL);
+        modelUsed = FALLBACK_MODEL;
+        fellBack = true;
+      } catch (err2) {
+        const message = err2 instanceof Error ? err2.message : 'Unknown Anthropic error.';
+        return NextResponse.json(
+          {
+            error: isOverload(err2)
+              ? `Anthropic is temporarily overloaded (both ${primaryModel} and ${FALLBACK_MODEL}). Wait 30 seconds and try again — your inputs are preserved.`
+              : `Extraction failed on fallback model: ${message}`,
+          },
+          { status: 503 }
+        );
+      }
+    } else {
+      const message = err instanceof Error ? err.message : 'Unknown Anthropic error.';
+      return NextResponse.json(
+        {
+          error: isOverload(err)
+            ? `Anthropic is temporarily overloaded. Wait 30 seconds and try again — your inputs are preserved.`
+            : `Extraction failed: ${message}`,
+        },
+        { status: isOverload(err) ? 503 : 502 }
+      );
+    }
   }
 
   const toolUse = response.content.find(
@@ -151,7 +190,8 @@ export async function POST(req: Request) {
 
   return NextResponse.json({
     obligations: parsed.data.obligations,
-    model,
+    model: modelUsed,
+    fell_back: fellBack,
     usage: response.usage,
     filename: body.filename ?? null,
   });
