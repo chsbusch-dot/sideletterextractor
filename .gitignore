@@ -33,3 +33,6 @@ client-readme.pdf
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Claude Code local state (worktrees would commit as broken gitlinks)
+.claude/
