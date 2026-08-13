@@ -4,6 +4,8 @@ An LLM turns an unstructured LP side letter into a standardized obligation regis
 
 Roughly 3,350 lines of TypeScript, five working surfaces, built in a day with AI coding agents. **The speed is not the interesting part.** The interesting part is which decisions were worth spending the day on, because extraction from legal prose is close to solved and the handoff to a human who has to sign off on the output is not.
 
+Live at [sideletterextractor.vercel.app](https://sideletterextractor.vercel.app), behind a shared password. The gate is deliberate: the app spends real API credits per document, and an open demo URL is an open invoice. Ask me for access and I will walk you through it.
+
 Built by [Christian Busch](https://www.linkedin.com/in/cbusch).
 
 ---
