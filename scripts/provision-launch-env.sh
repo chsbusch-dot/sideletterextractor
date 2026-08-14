@@ -79,24 +79,38 @@ if [[ -z "$UPSTASH_KEY" ]]; then
 fi
 
 log "Checking Upstash for database '$DB_NAME'…"
-DB_JSON=$(curl -sf -u "$UPSTASH_EMAIL:$UPSTASH_KEY" https://api.upstash.com/v2/redis/databases |
-  jq -r --arg n "$DB_NAME" '.[] | select(.database_name==$n)' | head -60)
-
-if [[ -z "$DB_JSON" ]]; then
-  log "  not found — creating ($DB_REGION, TLS)…"
-  DB_JSON=$(curl -sf -u "$UPSTASH_EMAIL:$UPSTASH_KEY" -X POST \
-    https://api.upstash.com/v2/redis/database \
-    -H 'Content-Type: application/json' \
-    -d "{\"name\":\"$DB_NAME\",\"region\":\"$DB_REGION\",\"tls\":true}")
-  log "  created."
-else
-  log "  found existing database."
+if ! LIST_JSON=$(curl -sf -u "$UPSTASH_EMAIL:$UPSTASH_KEY" https://api.upstash.com/v2/redis/databases); then
+  echo "Upstash API rejected the request. Check UPSTASH_API_KEY and that" >&2
+  echo "UPSTASH_EMAIL ($UPSTASH_EMAIL) is the account email." >&2
+  exit 1
 fi
 
-DB_ID=$(printf '%s' "$DB_JSON" | jq -r '.database_id')
+DB_ID=$(printf '%s' "$LIST_JSON" |
+  jq -r --arg n "$DB_NAME" 'map(select(.database_name==$n)) | .[0].database_id // empty')
+
+if [[ -z "$DB_ID" ]]; then
+  log "  not found — creating ($DB_REGION, TLS)…"
+  if ! CREATED=$(curl -sf -u "$UPSTASH_EMAIL:$UPSTASH_KEY" -X POST \
+    https://api.upstash.com/v2/redis/database \
+    -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$DB_NAME\",\"region\":\"$DB_REGION\",\"tls\":true}"); then
+    echo "Could not create the Upstash database." >&2
+    exit 1
+  fi
+  DB_ID=$(printf '%s' "$CREATED" | jq -r '.database_id // empty')
+  [[ -z "$DB_ID" ]] && { echo "Upstash create returned no database_id." >&2; exit 1; }
+  log "  created."
+else
+  log "  found existing database — reusing it."
+fi
+
 DETAILS=$(curl -sf -u "$UPSTASH_EMAIL:$UPSTASH_KEY" "https://api.upstash.com/v2/redis/database/$DB_ID")
-REST_URL="https://$(printf '%s' "$DETAILS" | jq -r '.endpoint')"
-REST_TOKEN=$(printf '%s' "$DETAILS" | jq -r '.rest_token')
+REST_URL="https://$(printf '%s' "$DETAILS" | jq -r '.endpoint // empty')"
+REST_TOKEN=$(printf '%s' "$DETAILS" | jq -r '.rest_token // empty')
+if [[ "$REST_URL" == "https://" || -z "$REST_TOKEN" ]]; then
+  echo "Upstash returned no endpoint/rest_token for database $DB_ID." >&2
+  exit 1
+fi
 
 # --- 2. Session secret (create once, then stable) ----------------------------
 SESSION_SECRET="$(bws_get SESSION_SECRET)"
