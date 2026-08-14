@@ -26,6 +26,7 @@ BWS_PROJECT="${BWS_VERCEL_PROJECT_ID:-3b3ce56b-b80a-4aa5-a8d3-b45f014b75db}" # B
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB_NAME="${UPSTASH_DB_NAME:-sideletters}"
 DB_REGION="${UPSTASH_PRIMARY_REGION:-us-east-1}"
+VERCEL_PROJECT_NAME="${VERCEL_PROJECT_NAME:-sideletterextractor}"
 ENVS=(production preview development)
 
 RESP_BODY=$(mktemp)
@@ -48,29 +49,90 @@ bws_token() {
 
 TOKEN="$(bws_token)"
 
+# The vault listing is fetched once: bws is slow, and a mid-run failure that
+# silently returned "absent" is what previously caused a fresh SESSION_SECRET
+# to be minted on a re-run.
+if ! VAULT_JSON=$(BWS_ACCESS_TOKEN="$TOKEN" bws secret list "$BWS_PROJECT" -o json); then
+  echo "Could not list the Bitwarden 'vercel' project. Check the bws-admin token." >&2
+  exit 1
+fi
+
+bws_id_for() { printf '%s' "$VAULT_JSON" | jq -r --arg k "$1" '.[] | select(.key==$k) | .id' | head -1; }
+
 bws_get() { # bws_get KEY -> value on stdout, empty if absent
-  local id
-  id=$(BWS_ACCESS_TOKEN="$TOKEN" bws secret list "$BWS_PROJECT" -o json 2>/dev/null |
-    jq -r --arg k "$1" '.[] | select(.key==$k) | .id' | head -1)
+  local id; id=$(bws_id_for "$1")
   [[ -z "$id" ]] && return 0
   BWS_ACCESS_TOKEN="$TOKEN" bws secret get "$id" -o json | jq -r .value
 }
 
-bws_put_if_absent() { # bws_put_if_absent KEY VALUE NOTE
-  local existing
-  existing=$(BWS_ACCESS_TOKEN="$TOKEN" bws secret list "$BWS_PROJECT" -o json 2>/dev/null |
-    jq -r --arg k "$1" '.[] | select(.key==$k) | .id' | head -1)
-  if [[ -n "$existing" ]]; then return 0; fi
-  BWS_ACCESS_TOKEN="$TOKEN" bws secret create "$1" "$2" "$BWS_PROJECT" --note "$3" -o none
-  log "  vault: stored $1"
+bws_put() { # bws_put KEY VALUE NOTE — create, or update in place if it exists
+  local id; id=$(bws_id_for "$1")
+  if [[ -n "$id" ]]; then
+    BWS_ACCESS_TOKEN="$TOKEN" bws secret edit --value "$2" -o none "$id" >/dev/null
+    log "  vault: updated $1"
+  else
+    BWS_ACCESS_TOKEN="$TOKEN" bws secret create "$1" "$2" "$BWS_PROJECT" --note "$3" -o none >/dev/null
+    log "  vault: stored $1"
+  fi
 }
 
-vercel_set() { # vercel_set NAME VALUE — upsert across all three environments
-  local name="$1" value="$2" env
-  for env in "${ENVS[@]}"; do
-    vercel env rm "$name" "$env" -y --cwd "$REPO_DIR" >/dev/null 2>&1 || true
-    printf '%s' "$value" | vercel env add "$name" "$env" --cwd "$REPO_DIR" >/dev/null
+# Set env vars through the REST API rather than `vercel env add`.
+#
+# Why: `vercel env add NAME preview` cannot be driven non-interactively in CLI
+# 54.14.0 — with piped stdin it demands a git branch, and the --value/--yes form
+# it suggests in its own hint is rejected too. Worse, it exits 0 after skipping
+# the variable, so the failure is silent. The REST API sets all three targets in
+# one call, keeps secrets out of argv, and reports real HTTP failures.
+VERCEL_TOKEN="${VERCEL_TOKEN:-$(jq -r '.token // empty' \
+  "$HOME/Library/Application Support/com.vercel.cli/auth.json" 2>/dev/null)}"
+if [[ -z "$VERCEL_TOKEN" ]]; then
+  echo "No Vercel token. Run 'vercel login', or export VERCEL_TOKEN." >&2
+  exit 1
+fi
+
+# Prefer the local link file, but recent CLI versions do not always write one —
+# fall back to resolving the project by name through the API.
+PROJECT_ID=$(jq -r '.projectId // empty' "$REPO_DIR/.vercel/project.json" 2>/dev/null || true)
+TEAM_ID=$(jq -r '.orgId // empty' "$REPO_DIR/.vercel/project.json" 2>/dev/null || true)
+
+if [[ -z "$PROJECT_ID" ]]; then
+  PROJECT_JSON=$(curl -sf -H "Authorization: Bearer $VERCEL_TOKEN" \
+    "https://api.vercel.com/v9/projects?search=$VERCEL_PROJECT_NAME" || true)
+  PROJECT_ID=$(printf '%s' "$PROJECT_JSON" |
+    jq -r --arg n "$VERCEL_PROJECT_NAME" '.projects[]? | select(.name==$n) | .id' | head -1)
+  TEAM_ID=$(printf '%s' "$PROJECT_JSON" |
+    jq -r --arg n "$VERCEL_PROJECT_NAME" '.projects[]? | select(.name==$n) | .accountId' | head -1)
+fi
+
+if [[ -z "$PROJECT_ID" ]]; then
+  echo "Could not resolve the Vercel project '$VERCEL_PROJECT_NAME'." >&2
+  echo "Run 'vercel link --cwd $REPO_DIR', or set VERCEL_PROJECT_NAME." >&2
+  exit 1
+fi
+
+TEAM_QS=""
+[[ "$TEAM_ID" == team_* ]] && TEAM_QS="?teamId=$TEAM_ID"
+ENV_URL="https://api.vercel.com/v10/projects/$PROJECT_ID/env$TEAM_QS"
+
+vercel_set() { # vercel_set NAME VALUE — replace across production, preview, development
+  local name="$1" value="$2" existing id code payload
+
+  existing=$(curl -sf -H "Authorization: Bearer $VERCEL_TOKEN" "$ENV_URL" || true)
+  for id in $(printf '%s' "$existing" | jq -r --arg k "$name" '.envs[]? | select(.key==$k) | .id'); do
+    curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $VERCEL_TOKEN" \
+      "https://api.vercel.com/v9/projects/$PROJECT_ID/env/$id$TEAM_QS"
   done
+
+  payload=$(jq -n --arg k "$name" --arg v "$value" \
+    '{key:$k, value:$v, type:"encrypted", target:["production","preview","development"]}')
+  code=$(curl -s -o "$RESP_BODY" -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $VERCEL_TOKEN" -H 'Content-Type: application/json' \
+    -d "$payload" "$ENV_URL")
+
+  if [[ $code != 2* ]]; then
+    echo "  FAILED to set $name (HTTP $code): $(head -c 200 "$RESP_BODY")" >&2
+    exit 1
+  fi
   log "  vercel: set $name (production, preview, development)"
 }
 
@@ -138,10 +200,17 @@ if [[ "$REST_URL" == "https://" || -z "$REST_TOKEN" ]]; then
 fi
 
 # --- 2. Session secret (create once, then stable) ----------------------------
+# The vault is the source of truth: reuse the stored secret so re-running this
+# script never rotates it (rotation invalidates every signed session cookie and
+# signs all verified users out). A newly minted one is written to the vault
+# immediately, before it is pushed anywhere.
 SESSION_SECRET="$(bws_get SESSION_SECRET)"
 if [[ -z "$SESSION_SECRET" ]]; then
   SESSION_SECRET=$(openssl rand -base64 48)
-  log "Generated a new SESSION_SECRET."
+  log "No SESSION_SECRET in the vault — generating one (existing sessions, if any, end here)."
+  bws_put SESSION_SECRET "$SESSION_SECRET" "sideletters session cookie signing key"
+else
+  log "Reusing the SESSION_SECRET already in the vault."
 fi
 
 RESEND_KEY="$(bws_get RESEND_API_KEY)"
@@ -174,10 +243,10 @@ else
 fi
 
 # --- 4. Mirror into the vault ------------------------------------------------
-log "Mirroring values into the BWS 'vercel' project…"
-bws_put_if_absent UPSTASH_REDIS_REST_URL "$REST_URL" "sideletters Upstash REST URL"
-bws_put_if_absent UPSTASH_REDIS_REST_TOKEN "$REST_TOKEN" "sideletters Upstash REST token"
-bws_put_if_absent SESSION_SECRET "$SESSION_SECRET" "sideletters session cookie signing key"
+# SESSION_SECRET is already stored above, at the moment it was minted.
+log "Mirroring Upstash values into the BWS 'vercel' project…"
+bws_put UPSTASH_REDIS_REST_URL "$REST_URL" "sideletters Upstash REST URL"
+bws_put UPSTASH_REDIS_REST_TOKEN "$REST_TOKEN" "sideletters Upstash REST token"
 
 log ""
 log "Done. Redeploy for the new env to take effect:"
