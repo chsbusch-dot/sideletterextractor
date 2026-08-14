@@ -13,6 +13,7 @@ const LINKS = [
 
 export function Nav() {
   const path = usePathname();
+  const isLanding = path === '/access';
   return (
     <header className="border-b border-slate-200 bg-white">
       <div className="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
@@ -20,7 +21,7 @@ export function Nav() {
           Side Letter Obligation Extractor
         </Link>
         <nav className="flex items-center gap-1">
-          {LINKS.map((l) => {
+          {(isLanding ? [] : LINKS).map((l) => {
             const active = l.href === '/' ? path === '/' : path.startsWith(l.href);
             return (
               <Link

@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { NextResponse } from 'next/server';
 import { ExtractionResultSchema } from '@/lib/schema';
+import { consumeQuota, FREE_DOCUMENT_LIMIT } from '@/lib/leads';
+import { SESSION_COOKIE, readSession } from '@/lib/session';
 import {
   EXTRACTION_TOOL,
   SYSTEM_PROMPT,
@@ -41,6 +43,17 @@ function asDoc(b64: string) {
       data: b64,
     },
   };
+}
+
+function cookieValue(req: Request, name: string): string | undefined {
+  const raw = req.headers.get('cookie');
+  if (!raw) return undefined;
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() === name) return decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return undefined;
 }
 
 export async function POST(req: Request) {
@@ -91,6 +104,22 @@ export async function POST(req: Request) {
   const hasLpaPdf = typeof body.lpa_pdf === 'string' && body.lpa_pdf.length > 0;
   const hasLpaText = typeof body.lpa_text === 'string' && body.lpa_text.trim().length > 0;
   const lpaProvided = hasLpaPdf || hasLpaText;
+
+  // Free-tier allowance, counted per verified email. The middleware has already
+  // established that the caller has a session; this bounds what that session can spend.
+  const session = await readSession(cookieValue(req, SESSION_COOKIE));
+  if (session) {
+    const quota = await consumeQuota(session.email);
+    if (!quota) {
+      return NextResponse.json(
+        {
+          error: `You have used all ${FREE_DOCUMENT_LIMIT} documents on the free tier. Email cb@mvp.sv and I will lift the cap or walk you through a larger run.`,
+          quota_exhausted: true,
+        },
+        { status: 402 }
+      );
+    }
+  }
 
   const client = new Anthropic({ apiKey, maxRetries: 4 });
   const primaryModel = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;

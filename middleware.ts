@@ -1,53 +1,73 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { recordLogin, type LoginEvent } from '@/lib/login-log';
+import { SESSION_COOKIE, readSession } from '@/lib/session';
 
 const REALM = 'side-letter-extractor';
-const USER = 'catalant';
+const ADMIN_USER = process.env.SITE_USER || 'admin';
 
 const PAGE_ROUTES = ['/', '/register', '/calendar', '/mfn', '/review'];
 
+// Reachable without a session: the landing page, the access API, and the cron route.
+const PUBLIC_PREFIXES = ['/access', '/api/access', '/api/cron'];
+
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|api/cron).*)'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };
 
 function extractIp(req: NextRequest): string {
   const xff = req.headers.get('x-forwarded-for');
   if (xff) return xff.split(',')[0].trim();
-  const real = req.headers.get('x-real-ip');
-  if (real) return real;
-  return 'unknown';
+  return req.headers.get('x-real-ip') || 'unknown';
 }
 
-function isPageRoute(pathname: string): boolean {
-  return PAGE_ROUTES.includes(pathname);
+function isPublic(pathname: string): boolean {
+  return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
+/** Optional break-glass basic auth so the owner is never locked out by a misconfigured session. */
+function adminAuthed(req: NextRequest): boolean {
+  const password = process.env.SITE_PASSWORD;
+  if (!password) return false;
+  const header = req.headers.get('authorization');
+  if (!header || !header.startsWith('Basic ')) return false;
+  try {
+    const [u, p] = atob(header.slice('Basic '.length)).split(':');
+    return u === ADMIN_USER && p === password;
+  } catch {
+    return false;
+  }
 }
 
 export async function middleware(req: NextRequest) {
-  const password = process.env.SITE_PASSWORD;
-  if (!password) return NextResponse.next();
+  const { pathname } = req.nextUrl;
 
-  const header = req.headers.get('authorization');
-  let authed = false;
-  if (header && header.startsWith('Basic ')) {
-    try {
-      const decoded = atob(header.slice('Basic '.length));
-      const [u, p] = decoded.split(':');
-      if (u === USER && p === password) authed = true;
-    } catch {
-      // fall through to challenge
-    }
-  }
+  if (isPublic(pathname)) return NextResponse.next();
+
+  const session = await readSession(req.cookies.get(SESSION_COOKIE)?.value);
+  const authed = Boolean(session) || adminAuthed(req);
 
   if (!authed) {
-    return new NextResponse('Authentication required.', {
-      status: 401,
-      headers: { 'WWW-Authenticate': `Basic realm="${REALM}"` },
-    });
+    // A stale basic-auth challenge is only useful to the owner; everyone else gets the landing page.
+    if (process.env.SITE_PASSWORD && req.headers.get('authorization')) {
+      return new NextResponse('Authentication required.', {
+        status: 401,
+        headers: { 'WWW-Authenticate': `Basic realm="${REALM}"` },
+      });
+    }
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json(
+        { error: 'Access required. Register at /access to get a code.' },
+        { status: 401 }
+      );
+    }
+    const url = req.nextUrl.clone();
+    url.pathname = '/access';
+    url.search = pathname === '/' ? '' : `?next=${encodeURIComponent(pathname)}`;
+    return NextResponse.redirect(url);
   }
 
-  const pathname = req.nextUrl.pathname;
   const isRsc = req.headers.get('rsc') !== null || req.nextUrl.search.includes('_rsc');
-  if (isPageRoute(pathname) && !isRsc) {
+  if (PAGE_ROUTES.includes(pathname) && !isRsc) {
     const now = Date.now();
     const event: LoginEvent = {
       ts: now,
@@ -59,8 +79,7 @@ export async function middleware(req: NextRequest) {
       ua: req.headers.get('user-agent') || '',
       path: pathname,
     };
-    // Fire-and-forget; never block the response on logging.
-    recordLogin(event).catch(() => {});
+    await recordLogin(event);
   }
 
   return NextResponse.next();

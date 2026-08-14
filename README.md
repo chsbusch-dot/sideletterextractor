@@ -4,7 +4,7 @@ An LLM turns an unstructured LP side letter into a standardized obligation regis
 
 Roughly 3,350 lines of TypeScript, five working surfaces, built in a day with AI coding agents. **The speed is not the interesting part.** The interesting part is which decisions were worth spending the day on, because extraction from legal prose is close to solved and the handoff to a human who has to sign off on the output is not.
 
-Live at [sideletterextractor.vercel.app](https://sideletterextractor.vercel.app), behind a shared password. The gate is deliberate: the app spends real API credits per document, and an open demo URL is an open invoice. Ask me for access and I will walk you through it.
+Live and free at **[sideletterextractor.ectotropy.com](https://sideletterextractor.ectotropy.com)**, three documents per registered user. The gate is deliberate: each extraction runs a frontier model over a full PDF, and an open demo URL is an open invoice.
 
 Built by [Christian Busch](https://www.linkedin.com/in/cbusch).
 
@@ -52,7 +52,9 @@ Today an associate does this with a spreadsheet, or nobody does it. It is a near
 
 **Failure is handled in product terms, not stack traces.** PDFs are parsed client-side, which sidesteps the serverless body limit and keeps large documents working. On an upstream overload the route retries, then falls back to a faster model automatically. If both fail the user reads "wait 30 seconds, your inputs are preserved," not a 500.
 
-**No database, deliberately.** State lives in `localStorage` with JSON export and import. Real multi-user persistence means auth, an audit trail, and a retention posture for LP-confidential documents. That is a product, not a demo, and shipping a fake version of it would be the dishonest choice.
+**The gate is a product decision, not a paywall.** Access requires a name, work email, and company, verified by a 6-digit code. That buys three things at once: the API bill stays attached to a real person, the free allowance is enforceable per user rather than per IP, and a free tool for fund and legal-ops people produces a list of fund and legal-ops people. Session state is a signed, self-contained cookie verified in Edge middleware, so gating a request costs no round trip; the spend counter lives in Redis and is only touched on the extract path, where it matters.
+
+**No database for user data, deliberately.** State lives in `localStorage` with JSON export and import. Real multi-user persistence means auth, an audit trail, and a retention posture for LP-confidential documents. That is a product, not a demo, and shipping a fake version of it would be the dishonest choice.
 
 ## What production would actually require
 
@@ -83,8 +85,12 @@ npm run dev
 |---|---|---|
 | `ANTHROPIC_API_KEY` | yes | Extraction. |
 | `ANTHROPIC_MODEL` | no | Defaults to `claude-opus-4-8`. Set `claude-sonnet-4-6` for cheaper, faster runs. |
-| `SITE_PASSWORD` | no | Gates the site behind HTTP basic auth. Recommended on any public URL so visitors cannot drain your API credits. |
-| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `RESEND_API_KEY`, `LOGIN_DIGEST_TO` | no | All four together enable a daily access-digest email. |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | for the gate | Verification codes, registrations, and per-user document counts. |
+| `RESEND_API_KEY`, `ACCESS_EMAIL_FROM` | for the gate | Delivers the 6-digit access code. |
+| `SESSION_SECRET` | recommended | Signs the session cookie. Falls back to `ANTHROPIC_API_KEY`, which works but means rotating the key logs everyone out. |
+| `FREE_DOCUMENT_LIMIT` | no | Documents per verified email. Defaults to 3. |
+| `SITE_PASSWORD`, `SITE_USER` | no | Break-glass basic auth that bypasses the gate, so the owner is never locked out by a misconfigured session. |
+| `LOGIN_DIGEST_TO`, `LOGIN_DIGEST_FROM` | no | Daily digest listing new registrations and sign-in activity. |
 | `CRON_SECRET` | no | Lets the digest cron route refuse non-cron callers. |
 
 Optional: `scripts/env-pull.sh` and `scripts/env-push-vercel.sh` sync secrets from Bitwarden Secrets Manager into `.env.local` and Vercel, keeping Bitwarden the single source of truth. Requires `bws` and `jq`.
@@ -96,13 +102,16 @@ To deploy, import the repo on Vercel and set `ANTHROPIC_API_KEY`. The Anthropic 
 - **Not legal advice.** The tool extracts and structures. It does not interpret enforceability, and the system prompt says so in those words.
 - **Scanned PDFs need OCR first.** No text layer means no extraction. Run `ocrmypdf` upstream or paste the text.
 - **Document text is sent to the Anthropic API.** Do not upload anything you would not send through that API.
-- **Single user.** No accounts, no server-side storage, no audit log. See the design note above.
+- **Single user per browser.** Registration meters usage; it is not multi-tenant. Your register lives in your browser, with no server-side storage and no audit trail. See the design note above.
 
 ## Map
 
 ```
 app/
-  api/extract/route.ts        Anthropic call, forced tool use, schema validation, model fallback
+  access/page.tsx             Public landing page and registration form, the only route open to visitors
+  api/access/request/route.ts Issues and emails a 6-digit verification code, records the registration
+  api/access/verify/route.ts  Verifies the code, sets the signed session cookie
+  api/extract/route.ts        Anthropic call, forced tool use, schema validation, model fallback, quota
   api/cron/login-digest/      Optional daily access-digest email
   page.tsx                    Upload, extract, review, save
   register/page.tsx           Master register: filters, search, CSV and JSON export
@@ -115,6 +124,8 @@ components/
   ObligationCard.tsx          Row detail: carve-outs, conditions, thresholds, confidence
   Nav.tsx
 lib/
+  session.ts                  Web Crypto HMAC session cookie, shared by Edge middleware and Node routes
+  leads.ts                    Redis: verification codes, registrations, per-user document counter
   prompt.ts                   System prompt and emit_obligation_register tool schema
   schema.ts                   Zod schema, lenient coercion, upsert key, review-row test
   taxonomy.ts                 Closed vocabularies: obligation types, frequencies, entity layers
@@ -123,7 +134,7 @@ lib/
   pdf.ts                      Client-side text extraction and match normalization
   store.ts                    localStorage CRUD, upsert on lp_name + clause_ref
   csv.ts, useRegister.ts, login-log.ts
-middleware.ts                 Optional shared-password gate and access logging
+middleware.ts                 Session gate, break-glass basic auth, access logging
 scripts/make_test_pdf.py      Synthetic test document generator
 ```
 

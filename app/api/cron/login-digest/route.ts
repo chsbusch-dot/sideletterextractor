@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { Resend } from 'resend';
 import { fetchLogins, type LoginEvent } from '@/lib/login-log';
+import { fetchLeads, peekQuota, type Lead } from '@/lib/leads';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -44,6 +45,57 @@ function authorized(req: Request): boolean {
   const header = req.headers.get('authorization');
   if (!header) return false;
   return header === `Bearer ${secret}`;
+}
+
+async function buildLeadsHtml(leads: Lead[]): Promise<string> {
+  if (leads.length === 0) {
+    return `<p style="margin:0 0 18px">No new registrations in the last 24 hours.</p>`;
+  }
+
+  // Latest record wins per address, so a verification does not double-count the signup.
+  const byEmail = new Map<string, Lead>();
+  for (const l of leads) byEmail.set(l.email, l);
+  const unique = [...byEmail.values()].sort((a, b) => b.ts - a.ts);
+
+  const rows = await Promise.all(
+    unique.map(async (l) => {
+      const q = await peekQuota(l.email).catch(() => null);
+      const used = q ? `${q.used}/${q.limit}` : '—';
+      const verified = l.verified_at
+        ? '<span style="color:#15803d">verified</span>'
+        : '<span style="color:#b45309">code not entered</span>';
+      const flag = l.work_email
+        ? '<span style="color:#15803d;font-weight:600">work</span>'
+        : '<span style="color:#64748b">personal</span>';
+      return `
+        <tr>
+          <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;vertical-align:top">
+            <div style="font-weight:600">${escapeHtml(l.name)}</div>
+            <div style="font-size:12px;color:#475569">${escapeHtml(l.email)} · ${flag}</div>
+          </td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;vertical-align:top">
+            <div>${escapeHtml(l.company)}</div>
+            <div style="font-size:12px;color:#475569">${escapeHtml(l.role || '—')}</div>
+          </td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;vertical-align:top">
+            <div>${escapeHtml(fmtPacific(l.iso))}</div>
+            <div style="font-size:12px;color:#475569">${verified} · ${used} docs</div>
+          </td>
+        </tr>`;
+    })
+  );
+
+  return `
+    <table style="border-collapse:collapse;width:100%;font-size:14px;margin:0 0 24px">
+      <thead>
+        <tr style="text-align:left;color:#475569;font-size:12px;text-transform:uppercase;letter-spacing:.04em">
+          <th style="padding:6px 10px">Who</th>
+          <th style="padding:6px 10px">Company</th>
+          <th style="padding:6px 10px">When</th>
+        </tr>
+      </thead>
+      <tbody>${rows.join('')}</tbody>
+    </table>`;
 }
 
 function buildHtml(events: LoginEvent[], to: string): string {
@@ -150,13 +202,26 @@ export async function POST(req: Request) {
     );
   }
 
-  const html = buildHtml(events, to);
+  let leads: Lead[] = [];
+  try {
+    leads = await fetchLeads(Date.now() - WINDOW_MS);
+  } catch {
+    // A leads failure must not suppress the sign-in digest.
+  }
+  const newSignups = new Set(leads.map((l) => l.email)).size;
+
+  const leadsHtml = await buildLeadsHtml(leads);
+  const html = `<h2 style="font-size:16px;margin:0 0 10px">New registrations</h2>${leadsHtml}<h2 style="font-size:16px;margin:0 0 10px">Sign-in activity</h2>${buildHtml(
+    events,
+    to
+  )}`;
+
   const subject =
-    events.length === 0
-      ? 'Side Letter Extractor — no sign-ins today'
-      : `Side Letter Extractor — ${events.length} request${events.length === 1 ? '' : 's'} (${
-          new Set(events.map((e) => e.ip)).size
-        } IP${new Set(events.map((e) => e.ip)).size === 1 ? '' : 's'})`;
+    newSignups > 0
+      ? `Side Letter Extractor: ${newSignups} new registration${newSignups === 1 ? '' : 's'}`
+      : events.length === 0
+        ? 'Side Letter Extractor: quiet today'
+        : `Side Letter Extractor: ${events.length} request${events.length === 1 ? '' : 's'}, no new registrations`;
 
   try {
     const resend = new Resend(resendKey);
