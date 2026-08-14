@@ -1,7 +1,7 @@
 import { Redis } from '@upstash/redis';
 import { normalizeEmail } from './session';
 
-export const FREE_DOCUMENT_LIMIT = Number(process.env.FREE_DOCUMENT_LIMIT || 3);
+export const FREE_DOCUMENT_LIMIT = Number(process.env.FREE_DOCUMENT_LIMIT || 2);
 
 const CODE_TTL_SECONDS = 15 * 60;
 const LEADS_LIST = 'sle:leads';

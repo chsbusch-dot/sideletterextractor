@@ -74,7 +74,43 @@ export async function readSession(token: string | undefined | null): Promise<Ses
 
 export const SESSION_MAX_AGE = SESSION_DAYS * 24 * 60 * 60;
 
+export function cookieValue(req: Request, name: string): string | undefined {
+  const raw = req.headers.get('cookie');
+  if (!raw) return undefined;
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() === name) return decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return undefined;
+}
+
+export async function sessionFromRequest(req: Request): Promise<Session | null> {
+  return readSession(cookieValue(req, SESSION_COOKIE));
+}
+
+/**
+ * Canonical form used as the storage key for codes, leads, quotas, and credits.
+ * Strips plus-suffixes everywhere and dots in the local part for Gmail, so
+ * alias variants of one mailbox share one free allowance. Delivery should use
+ * the address as the user typed it (trimmed/lowercased), not this.
+ */
 export function normalizeEmail(raw: string): string {
+  const s = raw.trim().toLowerCase();
+  const at = s.lastIndexOf('@');
+  if (at < 0) return s;
+  let local = s.slice(0, at);
+  const domain = s.slice(at + 1);
+  const plus = local.indexOf('+');
+  if (plus >= 0) local = local.slice(0, plus);
+  if (domain === 'gmail.com' || domain === 'googlemail.com') {
+    local = local.replace(/\./g, '');
+  }
+  return `${local}@${domain}`;
+}
+
+/** The deliverable form of an address: cleaned up, but aliases left intact. */
+export function deliveryEmail(raw: string): string {
   return raw.trim().toLowerCase();
 }
 

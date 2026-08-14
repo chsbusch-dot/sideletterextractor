@@ -7,8 +7,17 @@ const ADMIN_USER = process.env.SITE_USER || 'admin';
 
 const PAGE_ROUTES = ['/', '/register', '/calendar', '/mfn', '/review'];
 
-// Reachable without a session: the landing page, the access API, and the cron route.
-const PUBLIC_PREFIXES = ['/access', '/api/access', '/api/cron'];
+// Reachable without a session: the landing page, the access API, the cron
+// route, the Stripe webhook (signature-verified in the route), and legal pages.
+const PUBLIC_PREFIXES = [
+  '/access',
+  '/api/access',
+  '/api/cron',
+  '/api/stripe',
+  '/terms',
+  '/privacy',
+  '/imprint',
+];
 
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],

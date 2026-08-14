@@ -135,8 +135,9 @@ export default function AccessPage() {
           <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-ink">Get access</h2>
             <p className="mt-1 text-sm text-ink-muted">
-              Free, three documents. It runs a frontier model over a full PDF, so the cap keeps a
-              free tool free.
+              Your first two documents are free. After that it is $19 per document, or $120
+              for ten. Each run puts a frontier model over a full PDF — pricing is what keeps
+              the tool running.
             </p>
             <div className="mt-5">
               <Suspense fallback={null}>

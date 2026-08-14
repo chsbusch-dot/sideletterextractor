@@ -8,19 +8,15 @@ import {
   type Lead,
 } from '@/lib/leads';
 import {
+  deliveryEmail,
   emailDomain,
   isPlausibleEmail,
   isWorkEmail,
   normalizeEmail,
 } from '@/lib/session';
+import { rateLimit, requestIp } from '@/lib/ratelimit';
 
 export const runtime = 'nodejs';
-
-function ip(req: Request): string {
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff) return xff.split(',')[0].trim();
-  return req.headers.get('x-real-ip') || 'unknown';
-}
 
 export async function POST(req: Request) {
   if (!isConfigured()) {
@@ -41,6 +37,17 @@ export async function POST(req: Request) {
   const company = (body.company || '').trim();
   const role = (body.role || '').trim();
   const email = normalizeEmail(body.email || '');
+  const to = deliveryEmail(body.email || '');
+
+  const clientIp = requestIp(req);
+  const ipOk = await rateLimit('access-req-ip', clientIp, 5, 15 * 60);
+  const emailOk = await rateLimit('access-req-email', email, 3, 15 * 60);
+  if (!ipOk || !emailOk) {
+    return NextResponse.json(
+      { error: 'Too many code requests. Wait a few minutes and try again.' },
+      { status: 429 }
+    );
+  }
 
   if (name.length < 2) {
     return NextResponse.json({ error: 'Please enter your name.' }, { status: 400 });
@@ -68,7 +75,7 @@ export async function POST(req: Request) {
     role,
     domain: emailDomain(email),
     work_email: isWorkEmail(email),
-    ip: ip(req),
+    ip: clientIp,
     country: req.headers.get('x-vercel-ip-country') || '',
     city: decodeURIComponent(req.headers.get('x-vercel-ip-city') || ''),
     referrer: req.headers.get('referer') || '',
@@ -93,7 +100,7 @@ export async function POST(req: Request) {
     const resend = new Resend(resendKey);
     const { error } = await resend.emails.send({
       from,
-      to: email,
+      to,
       subject: `Your access code: ${code}`,
       text: [
         `Your access code for the Side Letter Obligation Extractor is:`,
@@ -118,5 +125,5 @@ export async function POST(req: Request) {
     );
   }
 
-  return NextResponse.json({ ok: true, email });
+  return NextResponse.json({ ok: true, email: to });
 }

@@ -1,8 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { NextResponse } from 'next/server';
 import { ExtractionResultSchema } from '@/lib/schema';
-import { consumeQuota, FREE_DOCUMENT_LIMIT } from '@/lib/leads';
-import { SESSION_COOKIE, readSession } from '@/lib/session';
+import { consumeDocument, getBalance, refundDocument, type ConsumeSource } from '@/lib/billing';
+import { FREE_DOCUMENT_LIMIT } from '@/lib/leads';
+import { formatUsd, PACKS } from '@/lib/pricing';
+import { rateLimit, requestIp } from '@/lib/ratelimit';
+import { sessionFromRequest } from '@/lib/session';
 import {
   EXTRACTION_TOOL,
   SYSTEM_PROMPT,
@@ -43,17 +46,6 @@ function asDoc(b64: string) {
       data: b64,
     },
   };
-}
-
-function cookieValue(req: Request, name: string): string | undefined {
-  const raw = req.headers.get('cookie');
-  if (!raw) return undefined;
-  for (const part of raw.split(';')) {
-    const eq = part.indexOf('=');
-    if (eq < 0) continue;
-    if (part.slice(0, eq).trim() === name) return decodeURIComponent(part.slice(eq + 1).trim());
-  }
-  return undefined;
 }
 
 export async function POST(req: Request) {
@@ -105,21 +97,40 @@ export async function POST(req: Request) {
   const hasLpaText = typeof body.lpa_text === 'string' && body.lpa_text.trim().length > 0;
   const lpaProvided = hasLpaPdf || hasLpaText;
 
-  // Free-tier allowance, counted per verified email. The middleware has already
-  // established that the caller has a session; this bounds what that session can spend.
-  const session = await readSession(cookieValue(req, SESSION_COOKIE));
+  const ip = requestIp(req);
+  const burstOk = await rateLimit('extract-ip', ip, 10, 10 * 60);
+  const dailyOk = await rateLimit('extract-ip-day', ip, 60, 24 * 60 * 60);
+  if (!burstOk || !dailyOk) {
+    return NextResponse.json(
+      { error: 'Rate limit reached. Wait a few minutes and try again.' },
+      { status: 429 }
+    );
+  }
+
+  // Spend control, per verified email: the free allowance first, then purchased
+  // credits. The middleware has already established that the caller has a
+  // session; this bounds what that session can spend. Failed extractions are
+  // refunded via fail() below so an Anthropic outage never eats a credit.
+  const session = await sessionFromRequest(req);
+  let consumed: ConsumeSource | null = null;
   if (session) {
-    const quota = await consumeQuota(session.email);
-    if (!quota) {
+    consumed = await consumeDocument(session.email);
+    if (!consumed) {
       return NextResponse.json(
         {
-          error: `You have used all ${FREE_DOCUMENT_LIMIT} documents on the free tier. Email cb@mvp.sv and I will lift the cap or walk you through a larger run.`,
+          error: `You have used your ${FREE_DOCUMENT_LIMIT} free documents. Credits are ${formatUsd(PACKS.single.amountCents)} per document, or ${formatUsd(PACKS.ten.amountCents)} for ${PACKS.ten.credits}.`,
           quota_exhausted: true,
+          can_purchase: true,
         },
         { status: 402 }
       );
     }
   }
+
+  const fail = async (resp: NextResponse) => {
+    if (session && consumed) await refundDocument(session.email, consumed);
+    return resp;
+  };
 
   const client = new Anthropic({ apiKey, maxRetries: 4 });
   const primaryModel = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
@@ -172,24 +183,28 @@ export async function POST(req: Request) {
         fellBack = true;
       } catch (err2) {
         const message = err2 instanceof Error ? err2.message : 'Unknown Anthropic error.';
-        return NextResponse.json(
-          {
-            error: isOverload(err2)
-              ? `Anthropic is temporarily overloaded (both ${primaryModel} and ${FALLBACK_MODEL}). Wait 30 seconds and try again — your inputs are preserved.`
-              : `Extraction failed on fallback model: ${message}`,
-          },
-          { status: 503 }
+        return fail(
+          NextResponse.json(
+            {
+              error: isOverload(err2)
+                ? `Anthropic is temporarily overloaded (both ${primaryModel} and ${FALLBACK_MODEL}). Wait 30 seconds and try again — your inputs are preserved.`
+                : `Extraction failed on fallback model: ${message}`,
+            },
+            { status: 503 }
+          )
         );
       }
     } else {
       const message = err instanceof Error ? err.message : 'Unknown Anthropic error.';
-      return NextResponse.json(
-        {
-          error: isOverload(err)
-            ? `Anthropic is temporarily overloaded. Wait 30 seconds and try again — your inputs are preserved.`
-            : `Extraction failed: ${message}`,
-        },
-        { status: isOverload(err) ? 503 : 502 }
+      return fail(
+        NextResponse.json(
+          {
+            error: isOverload(err)
+              ? `Anthropic is temporarily overloaded. Wait 30 seconds and try again — your inputs are preserved.`
+              : `Extraction failed: ${message}`,
+          },
+          { status: isOverload(err) ? 503 : 502 }
+        )
       );
     }
   }
@@ -199,23 +214,29 @@ export async function POST(req: Request) {
       block.type === 'tool_use' && block.name === EXTRACTION_TOOL.name
   );
   if (!toolUse) {
-    return NextResponse.json(
-      { error: 'Model did not call the extraction tool. Try again.' },
-      { status: 502 }
+    return fail(
+      NextResponse.json(
+        { error: 'Model did not call the extraction tool. Try again.' },
+        { status: 502 }
+      )
     );
   }
 
   const parsed = ExtractionResultSchema.safeParse(toolUse.input);
   if (!parsed.success) {
-    return NextResponse.json(
-      {
-        error: 'Model output failed schema validation.',
-        details: parsed.error.flatten(),
-        raw: toolUse.input,
-      },
-      { status: 502 }
+    return fail(
+      NextResponse.json(
+        {
+          error: 'Model output failed schema validation.',
+          details: parsed.error.flatten(),
+          raw: toolUse.input,
+        },
+        { status: 502 }
+      )
     );
   }
+
+  const balance = session ? await getBalance(session.email).catch(() => null) : null;
 
   return NextResponse.json({
     obligations: parsed.data.obligations,
@@ -223,5 +244,6 @@ export async function POST(req: Request) {
     fell_back: fellBack,
     usage: response.usage,
     filename: body.filename ?? null,
+    balance,
   });
 }
