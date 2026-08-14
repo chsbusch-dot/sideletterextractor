@@ -24,9 +24,12 @@ set -euo pipefail
 UPSTASH_EMAIL="${UPSTASH_EMAIL:-chsbusch@gmail.com}"
 BWS_PROJECT="${BWS_VERCEL_PROJECT_ID:-3b3ce56b-b80a-4aa5-a8d3-b45f014b75db}" # BWS project "vercel"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DB_NAME="sideletters"
-DB_REGION="us-east-1"
+DB_NAME="${UPSTASH_DB_NAME:-sideletters}"
+DB_REGION="${UPSTASH_PRIMARY_REGION:-us-east-1}"
 ENVS=(production preview development)
+
+RESP_BODY=$(mktemp)
+trap 'rm -f "$RESP_BODY"' EXIT
 
 log() { printf '%s\n' "$*"; }
 
@@ -88,16 +91,38 @@ fi
 DB_ID=$(printf '%s' "$LIST_JSON" |
   jq -r --arg n "$DB_NAME" 'map(select(.database_name==$n)) | .[0].database_id // empty')
 
+create_db() { # create_db PAYLOAD -> prints HTTP status; body lands in $RESP_BODY
+  curl -s -o "$RESP_BODY" -w '%{http_code}' -u "$UPSTASH_EMAIL:$UPSTASH_KEY" \
+    -X POST https://api.upstash.com/v2/redis/database \
+    -H 'Content-Type: application/json' -d "$1"
+}
+
 if [[ -z "$DB_ID" ]]; then
-  log "  not found — creating ($DB_REGION, TLS)…"
-  if ! CREATED=$(curl -sf -u "$UPSTASH_EMAIL:$UPSTASH_KEY" -X POST \
-    https://api.upstash.com/v2/redis/database \
-    -H 'Content-Type: application/json' \
-    -d "{\"name\":\"$DB_NAME\",\"region\":\"$DB_REGION\",\"tls\":true}"); then
-    echo "Could not create the Upstash database." >&2
+  log "  not found — creating (global, primary $DB_REGION)…"
+  # Upstash now provisions global databases; the legacy regional shape is kept
+  # as a fallback for older accounts.
+  CODE=$(create_db "{\"name\":\"$DB_NAME\",\"region\":\"global\",\"primary_region\":\"$DB_REGION\",\"tls\":true}")
+  if [[ $CODE != 2* ]]; then
+    log "  global create rejected (HTTP $CODE): $(head -c 200 "$RESP_BODY")"
+    log "  retrying with the legacy regional shape…"
+    CODE=$(create_db "{\"name\":\"$DB_NAME\",\"region\":\"$DB_REGION\",\"tls\":true}")
+  fi
+
+  if [[ $CODE != 2* ]]; then
+    echo "" >&2
+    echo "Could not create the Upstash database (HTTP $CODE):" >&2
+    head -c 400 "$RESP_BODY" >&2; echo "" >&2
+    echo "" >&2
+    echo "Databases already on the account:" >&2
+    printf '%s' "$LIST_JSON" | jq -r '.[] | "  - \(.database_name)  [\(.region)]"' >&2
+    echo "" >&2
+    echo "If this is a plan limit, reuse one of the above instead — every key this" >&2
+    echo "app writes is prefixed 'sle:', so sharing a database is safe:" >&2
+    echo "  UPSTASH_DB_NAME=<name> bash $0" >&2
     exit 1
   fi
-  DB_ID=$(printf '%s' "$CREATED" | jq -r '.database_id // empty')
+
+  DB_ID=$(jq -r '.database_id // empty' "$RESP_BODY")
   [[ -z "$DB_ID" ]] && { echo "Upstash create returned no database_id." >&2; exit 1; }
   log "  created."
 else
