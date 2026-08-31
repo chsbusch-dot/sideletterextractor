@@ -141,8 +141,8 @@ export function AccessForm() {
         {busy ? 'Sending code...' : 'Email me an access code'}
       </button>
       <p className="text-xs text-ink-muted">
-        Three documents free. No newsletter, no reselling your address. The code proves the mailbox
-        is real so the API bill stays attached to a person.
+        Two documents free, then $19 per document. No newsletter, no reselling your address. The
+        code proves the mailbox is real so the API bill stays attached to a person.
       </p>
     </form>
   );

@@ -1,17 +1,19 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { readFileAsBase64 } from '@/lib/pdf';
 import { store } from '@/lib/store';
 import { Obligation, StoredObligation, isReviewRow } from '@/lib/schema';
 import { PdfViewer } from '@/components/PdfViewer';
 import { ObligationCard } from '@/components/ObligationCard';
+import { BalancePill, PurchasePanel, type Balance } from '@/components/BillingPanel';
 
 type ExtractResponse = {
   obligations: Obligation[];
   model: string;
   filename: string | null;
+  balance?: Balance | null;
 };
 
 const TABS = ['Upload PDF', 'Paste text'] as const;
@@ -33,15 +35,59 @@ export default function HomePage() {
   const [preview, setPreview] = useState<StoredObligation[] | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ added: number; updated: number } | null>(null);
+  const [balance, setBalance] = useState<Balance | null>(null);
+  const [quotaExhausted, setQuotaExhausted] = useState(false);
+  const [purchaseNotice, setPurchaseNotice] = useState<string | null>(null);
 
   const fileInput = useRef<HTMLInputElement>(null);
   const lpaInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const fetchBalance = async () => {
+      try {
+        const res = await fetch('/api/me');
+        if (!res.ok) return;
+        const json = (await res.json()) as { balance?: Balance };
+        if (json.balance) setBalance(json.balance);
+      } catch {
+        // The pill is cosmetic; never block the page on it.
+      }
+    };
+
+    const params = new URLSearchParams(window.location.search);
+    const purchase = params.get('purchase');
+    if (purchase) {
+      params.delete('purchase');
+      const rest = params.toString();
+      window.history.replaceState(null, '', rest ? `/?${rest}` : '/');
+    }
+    if (purchase === 'success') {
+      setPurchaseNotice('Payment received. Your credits are being applied…');
+      // The Stripe webhook usually lands within seconds of the redirect;
+      // refetch a few times so the pill catches up without a reload.
+      fetchBalance();
+      const t1 = setTimeout(fetchBalance, 2500);
+      const t2 = setTimeout(() => {
+        fetchBalance();
+        setPurchaseNotice('Payment received. Credits added — good to go.');
+      }, 6000);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+    if (purchase === 'cancelled') {
+      setPurchaseNotice('Checkout cancelled — nothing was charged.');
+    }
+    fetchBalance();
+  }, []);
 
   const reset = () => {
     setError(null);
     setPreview(null);
     setActiveId(null);
     setSaved(null);
+    setQuotaExhausted(false);
   };
 
   const onPickFile = useCallback(
@@ -103,11 +149,13 @@ export default function HomePage() {
         });
         const json = (await res.json()) as
           | ExtractResponse
-          | { error: string; details?: unknown };
+          | { error: string; details?: unknown; quota_exhausted?: boolean };
         if (!res.ok || 'error' in json) {
+          if ('quota_exhausted' in json && json.quota_exhausted) setQuotaExhausted(true);
           const msg = 'error' in json ? json.error : `HTTP ${res.status}`;
           throw new Error(msg);
         }
+        if (json.balance) setBalance(json.balance);
         const now = new Date().toISOString();
         const stored: StoredObligation[] = json.obligations.map((o, idx) => ({
           ...o,
@@ -143,10 +191,18 @@ export default function HomePage() {
     <div className="space-y-6">
       {!preview && (
         <>
+          {purchaseNotice && (
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-ink">
+              {purchaseNotice}
+            </div>
+          )}
           <section>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Upload a side letter, get a register.
-            </h1>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-2xl font-semibold tracking-tight">
+                Upload a side letter, get a register.
+              </h1>
+              <BalancePill balance={balance} />
+            </div>
             <p className="text-ink-muted mt-2 max-w-3xl">
               Drop a PDF and the extractor returns a standardized obligation register —
               controlled taxonomy, source-page citations, self-reported confidence per row,
@@ -304,6 +360,7 @@ export default function HomePage() {
                 {error}
               </div>
             )}
+            {quotaExhausted && <PurchasePanel onError={setError} />}
           </section>
         </>
       )}
@@ -318,6 +375,10 @@ export default function HomePage() {
                 <span className="font-mono text-sm">{filename}</span>
               </h1>
               <PriorityFlagsInline rows={preview} />
+              <p className="mt-1 text-xs text-ink-muted">
+                AI-assisted extraction — verify each row against the source document before
+                relying on it. Not legal advice.
+              </p>
             </div>
             <div className="flex items-center gap-2">
               {saved ? (

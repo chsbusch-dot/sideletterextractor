@@ -37,6 +37,13 @@ npm ci && npm run lint && npm run typecheck && npm test && npm run build
   upserts Vercel env vars. `.env.example` documents the required names.
 - **Model config:** extraction defaults to `claude-opus-4-8` with automatic
   fallback to `claude-sonnet-4-6` on 529 overloads (`app/api/extract/route.ts`).
+- **Billing:** free per-email quota (`lib/leads.ts`, default 2) is consumed
+  first, then paid credits (`lib/billing.ts`; prices in `lib/pricing.ts` —
+  $19/document, $120/10). A document is consumed before extraction and
+  refunded on any failed run. The Stripe webhook (`/api/stripe/webhook`) is
+  signature-verified and idempotent on the Stripe event id; card data never
+  touches this app. Emails are keyed by `normalizeEmail` (plus-suffix and
+  Gmail-dot stripping) so alias variants share one allowance.
 
 ## Workflow
 

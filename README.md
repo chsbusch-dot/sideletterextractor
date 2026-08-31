@@ -4,7 +4,7 @@ An LLM turns an unstructured LP side letter into a standardized obligation regis
 
 Roughly 3,350 lines of TypeScript, five working surfaces, built in a day with AI coding agents. **The speed is not the interesting part.** The interesting part is which decisions were worth spending the day on, because extraction from legal prose is close to solved and the handoff to a human who has to sign off on the output is not.
 
-Live and free at **[sideletterextractor.ectotropy.com](https://sideletterextractor.ectotropy.com)**, three documents per registered user. The gate is deliberate: each extraction runs a frontier model over a full PDF, and an open demo URL is an open invoice.
+Live at **[sideletters.ectotropy.com](https://sideletters.ectotropy.com)** — two documents free per registered user, then $19 per document (or $120 for ten) via Stripe. The gate is deliberate: each extraction runs a frontier model over a full PDF, and an open demo URL is an open invoice.
 
 Built by [Christian Busch](https://www.linkedin.com/in/cbusch).
 
