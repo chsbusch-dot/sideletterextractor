@@ -1,5 +1,3 @@
-import { Suspense } from 'react';
-import { AccessForm } from '@/components/AccessForm';
 
 export const metadata = {
   title: 'Side Letter Obligation Extractor',
@@ -132,21 +130,7 @@ export default function AccessPage() {
         </div>
 
         <div className="lg:sticky lg:top-8">
-          <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-lg font-semibold text-ink">Get access</h2>
-            <p className="mt-1 text-sm text-ink-muted">
-              Your first two documents are free. After that it is $19 per document, or $120
-              for ten. Each run puts a frontier model over a full PDF — pricing is what keeps
-              the tool running.
-            </p>
-            <div className="mt-5">
-              <Suspense fallback={null}>
-                <AccessForm />
-              </Suspense>
-            </div>
-          </div>
-
-          <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-5 text-sm text-ink-muted">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-5 text-sm text-ink-muted">
             <p className="font-medium text-ink">Before you upload anything</p>
             <ul className="mt-2 list-disc space-y-1.5 pl-4">
               <li>Document text is sent to the Anthropic API. Do not upload what you would not send through it.</li>
