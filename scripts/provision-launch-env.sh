@@ -21,7 +21,6 @@
 
 set -euo pipefail
 
-UPSTASH_EMAIL="${UPSTASH_EMAIL:-chsbusch@gmail.com}"
 BWS_PROJECT="${BWS_VERCEL_PROJECT_ID:-3b3ce56b-b80a-4aa5-a8d3-b45f014b75db}" # BWS project "vercel"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB_NAME="${UPSTASH_DB_NAME:-sideletters}"
@@ -140,6 +139,12 @@ vercel_set() { # vercel_set NAME VALUE — replace across production, preview, d
 UPSTASH_KEY="$(bws_get UPSTASH_API_KEY)"
 if [[ -z "$UPSTASH_KEY" ]]; then
   echo "UPSTASH_API_KEY missing in the BWS 'vercel' project." >&2
+  exit 1
+fi
+# The account email is personal data, so it lives in the vault, not in this public repo.
+UPSTASH_EMAIL="${UPSTASH_EMAIL:-$(bws_get UPSTASH_EMAIL)}"
+if [[ -z "$UPSTASH_EMAIL" ]]; then
+  echo "UPSTASH_EMAIL missing: export it, or add it to the BWS 'vercel' project." >&2
   exit 1
 fi
 
